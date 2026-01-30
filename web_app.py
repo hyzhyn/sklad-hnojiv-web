@@ -2,6 +2,15 @@ import streamlit as st
 import psycopg2
 import pandas as pd
 from datetime import date
+import locale
+
+try:
+    locale.setlocale(locale.LC_ALL, "cs_CZ.UTF-8")
+except:
+    try:
+        locale.setlocale(locale.LC_ALL, "Czech_Czech Republic.1250") # Pro Windows
+    except:
+        pass # Pokud to nejde, zůstane angličtina
 
 # --- 1. KONFIGURACE STRÁNKY ---
 st.set_page_config(page_title="Sklad Hnojiv", page_icon="🌱", layout="centered")
@@ -198,3 +207,4 @@ else:
                     st.markdown("### 🟢 TANK B")
                     tb = [i for i in items if i[0] == 'B']
                     if tb: st.table(pd.DataFrame(tb, columns=["T", "Hnojivo", "Množství", "J."])[["Hnojivo","Množství","J."]])
+
