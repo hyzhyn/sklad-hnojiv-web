@@ -116,7 +116,9 @@ else:
             r_dict = {r[1]: r[0] for r in recepty}
             sel_r = st.selectbox("Recept:", list(r_dict.keys()))
             voda = st.number_input("Voda (litry):", min_value=0, step=100, value=1000)
-            datum = st.date_input("Datum míchání:", value=date.today())
+            
+            # ZMĚNA: Formát data na DD.MM.YYYY
+            datum = st.date_input("Datum míchání:", value=date.today(), format="DD.MM.YYYY")
             
             if st.button("✅ Uložit míchání", type="primary", use_container_width=True):
                 execute_query("INSERT INTO michani (recept_id, datum, objem_vody_l) VALUES (%s, %s, %s)", (r_dict[sel_r], datum, voda))
@@ -134,7 +136,9 @@ else:
             h_dict = {h[1]: h[0] for h in hnojiva}
             sel_h = st.selectbox("Hnojivo:", list(h_dict.keys()))
             mn = st.number_input("Množství (kg/l):", min_value=0.0, step=10.0)
-            dt = st.date_input("Datum pohybu:", value=date.today())
+            
+            # ZMĚNA: Formát data na DD.MM.YYYY
+            dt = st.date_input("Datum pohybu:", value=date.today(), format="DD.MM.YYYY")
             
             typ_sql = 'inventura' if "Inventura" in akce else 'dodavka'
             btn_lbl = "💾 Uložit INVENTURU" if "Inventura" in akce else "📥 Uložit PŘÍJEM"
@@ -153,10 +157,21 @@ else:
         
         if hist:
             df = pd.DataFrame(hist, columns=["ID", "Datum", "Hnojivo", "Množství", "Typ"])
+            
+            # ZMĚNA: Převedení data v tabulce na český formát (string)
+            df["Datum"] = pd.to_datetime(df["Datum"]).dt.strftime("%d.%m.%Y")
+            
             st.dataframe(df, use_container_width=True, hide_index=True)
             
             with st.expander("🗑️ Smazat záznam (při chybě)"):
-                opts = {f"{r[2]} ({r[3]} kg) - {r[1]}": r[0] for r in hist}
+                # Do výběru pro mazání dáme také hezké datum
+                opts = {}
+                for r in hist:
+                    # r[1] je datum objekt, převedeme ho na string
+                    datum_str = r[1].strftime("%d.%m.%Y")
+                    label = f"{datum_str} | {r[2]} ({r[3]} kg)"
+                    opts[label] = r[0]
+                    
                 del_sel = st.selectbox("Vyber záznam:", list(opts.keys()))
                 if st.button(f"❌ Smazat záznam"):
                     execute_query("DELETE FROM dodavky_inventura WHERE id=%s", (opts[del_sel],))
