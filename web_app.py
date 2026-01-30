@@ -4,13 +4,14 @@ import pandas as pd
 from datetime import date
 import locale
 
+# --- ZKUSÍME NASTAVIT ČEŠTINU ---
 try:
     locale.setlocale(locale.LC_ALL, "cs_CZ.UTF-8")
 except:
     try:
-        locale.setlocale(locale.LC_ALL, "Czech_Czech Republic.1250") # Pro Windows
+        locale.setlocale(locale.LC_ALL, "Czech_Czech Republic.1250")
     except:
-        pass # Pokud to nejde, zůstane angličtina
+        pass
 
 # --- 1. KONFIGURACE STRÁNKY ---
 st.set_page_config(page_title="Sklad Hnojiv", page_icon="🌱", layout="centered")
@@ -70,6 +71,17 @@ def execute_query(query, params=None, fetch=False):
         st.error(f"Chyba databáze: {e}")
         return None
 
+# --- POMOCNÁ FUNKCE PRO HEZKÁ ČÍSLA ---
+def clean_number(val):
+    if val is None: return ""
+    try:
+        # %g odstraní zbytečné nuly (20.00 -> 20, 20.50 -> 20.5)
+        formatted = f"{float(val):g}"
+        # Nahradíme tečku čárkou pro český vzhled
+        return formatted.replace(".", ",")
+    except:
+        return str(val)
+
 # --- 4. HLAVNÍ LOGIKA ---
 st.title("🌱 Sklad Hnojiv (Mobil)")
 
@@ -124,9 +136,7 @@ else:
         if recepty:
             r_dict = {r[1]: r[0] for r in recepty}
             sel_r = st.selectbox("Recept:", list(r_dict.keys()))
-            voda = st.number_input("Voda (litry):", min_value=0, step=100, value=1000)
-            
-            # ZMĚNA: Formát data na DD.MM.YYYY
+            voda = st.number_input("Voda (litry):", min_value=0, step=100, value=1000, format="%d")
             datum = st.date_input("Datum míchání:", value=date.today(), format="DD.MM.YYYY")
             
             if st.button("✅ Uložit míchání", type="primary", use_container_width=True):
@@ -144,9 +154,7 @@ else:
         if hnojiva:
             h_dict = {h[1]: h[0] for h in hnojiva}
             sel_h = st.selectbox("Hnojivo:", list(h_dict.keys()))
-            mn = st.number_input("Množství (kg/l):", min_value=0.0, step=10.0)
-            
-            # ZMĚNA: Formát data na DD.MM.YYYY
+            mn = st.number_input("Množství (kg/l):", min_value=0.0, step=10.0, format="%g")
             dt = st.date_input("Datum pohybu:", value=date.today(), format="DD.MM.YYYY")
             
             typ_sql = 'inventura' if "Inventura" in akce else 'dodavka'
@@ -167,18 +175,21 @@ else:
         if hist:
             df = pd.DataFrame(hist, columns=["ID", "Datum", "Hnojivo", "Množství", "Typ"])
             
-            # ZMĚNA: Převedení data v tabulce na český formát (string)
+            # FORMATOVÁNÍ DAT
             df["Datum"] = pd.to_datetime(df["Datum"]).dt.strftime("%d.%m.%Y")
+            
+            # APLIKACE ČISTÉHO ČÍSLA (bez nul)
+            df["Množství"] = df["Množství"].apply(clean_number)
             
             st.dataframe(df, use_container_width=True, hide_index=True)
             
             with st.expander("🗑️ Smazat záznam (při chybě)"):
-                # Do výběru pro mazání dáme také hezké datum
                 opts = {}
                 for r in hist:
-                    # r[1] je datum objekt, převedeme ho na string
                     datum_str = r[1].strftime("%d.%m.%Y")
-                    label = f"{datum_str} | {r[2]} ({r[3]} kg)"
+                    # I tady použijeme clean_number pro hezčí výpis v selectboxu
+                    mnozstvi_nice = clean_number(r[3])
+                    label = f"{datum_str} | {r[2]} ({mnozstvi_nice} kg)"
                     opts[label] = r[0]
                     
                 del_sel = st.selectbox("Vyber záznam:", list(opts.keys()))
@@ -199,12 +210,25 @@ else:
             
             if items:
                 c_a, c_b = st.columns(2)
+                
+                # Funkce pro vytvoření hezké tabulky
+                def make_nice_table(data_items):
+                    if not data_items: return None
+                    df_temp = pd.DataFrame(data_items, columns=["T", "Hnojivo", "Množství", "J."])
+                    # Aplikujeme čištění čísel
+                    df_temp["Množství"] = df_temp["Množství"].apply(clean_number)
+                    return df_temp[["Hnojivo", "Množství", "J."]]
+
                 with c_a:
                     st.markdown("### 🔵 TANK A")
                     ta = [i for i in items if i[0] == 'A']
-                    if ta: st.table(pd.DataFrame(ta, columns=["T", "Hnojivo", "Množství", "J."])[["Hnojivo","Množství","J."]])
+                    df_a = make_nice_table(ta)
+                    if df_a is not None: st.table(df_a)
+                    else: st.info("Prázdný")
+
                 with c_b:
                     st.markdown("### 🟢 TANK B")
                     tb = [i for i in items if i[0] == 'B']
-                    if tb: st.table(pd.DataFrame(tb, columns=["T", "Hnojivo", "Množství", "J."])[["Hnojivo","Množství","J."]])
-
+                    df_b = make_nice_table(tb)
+                    if df_b is not None: st.table(df_b)
+                    else: st.info("Prázdný")
