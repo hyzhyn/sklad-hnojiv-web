@@ -19,13 +19,8 @@ st.set_page_config(page_title="Sklad Hnojiv", page_icon="🌱", layout="centered
 # --- 2. VZHLED (CSS) ---
 st.markdown("""
 <style>
-    /* Hlavní pozadí a text */
     .stApp { background-color: #0E1117; color: #E0E0E0; }
-
-    /* Nadpisy */
     h1, h2, h3, h4, h5 { color: #2ECC71 !important; font-family: sans-serif; }
-
-    /* Tlačítka */
     div.stButton > button {
         background-color: #1E2329; color: #2ECC71; 
         border: 1px solid #2ECC71; border-radius: 8px; font-weight: bold;
@@ -36,13 +31,9 @@ st.markdown("""
     div.stButton > button[kind="primary"] {
         background-color: #2ECC71; color: #0E1117; border: none;
     }
-
-    /* Záložky */
     .stTabs [data-baseweb="tab-list"] { background-color: #1E2329; padding: 10px; border-radius: 10px 10px 0 0; gap: 5px; }
     .stTabs [data-baseweb="tab"] { color: #888888; font-weight: bold; }
     .stTabs [aria-selected="true"] { color: #2ECC71 !important; border-bottom-color: #2ECC71 !important; }
-
-    /* Inputy */
     .stTextInput input, .stNumberInput input, .stSelectbox div, .stDateInput input {
         background-color: #262730 !important; color: white !important; border-radius: 5px;
     }
@@ -71,13 +62,21 @@ def execute_query(query, params=None, fetch=False):
         st.error(f"Chyba databáze: {e}")
         return None
 
+# --- KONTROLA STRUKTURY DB (PRO ŘAZENÍ) ---
+def check_db_structure():
+    # Zajistíme, že existuje sloupec 'poradi' v tabulce hnojivo
+    try:
+        execute_query("ALTER TABLE hnojivo ADD COLUMN IF NOT EXISTS poradi INTEGER DEFAULT 0")
+    except:
+        pass
+
+check_db_structure()
+
 # --- POMOCNÁ FUNKCE PRO HEZKÁ ČÍSLA ---
 def clean_number(val):
     if val is None: return ""
     try:
-        # %g odstraní zbytečné nuly (20.00 -> 20, 20.50 -> 20.5)
         formatted = f"{float(val):g}"
-        # Nahradíme tečku čárkou pro český vzhled
         return formatted.replace(".", ",")
     except:
         return str(val)
@@ -145,25 +144,122 @@ else:
         else:
             st.warning("Žádné recepty.")
 
-    # --- TAB 2: SKLAD + HISTORIE ---
+    # --- TAB 2: SKLAD (HROMADNÁ INVENTURA + PŘÍJEM + ŘAZENÍ) ---
     with tab2:
-        st.header("Pohyby hnojiv")
-        akce = st.radio("Typ:", ["🚛 Příjem zboží (+)", "📝 Inventura (=)"], horizontal=True)
-        hnojiva = execute_query("SELECT id, nazev FROM hnojivo WHERE stredisko_id=%s ORDER BY nazev", (st.session_state['stredisko_id'],), fetch=True)
-        
-        if hnojiva:
-            h_dict = {h[1]: h[0] for h in hnojiva}
-            sel_h = st.selectbox("Hnojivo:", list(h_dict.keys()))
-            mn = st.number_input("Množství (kg/l):", min_value=0.0, step=10.0, format="%g")
-            dt = st.date_input("Datum pohybu:", value=date.today(), format="DD.MM.YYYY")
-            
-            typ_sql = 'inventura' if "Inventura" in akce else 'dodavka'
-            btn_lbl = "💾 Uložit INVENTURU" if "Inventura" in akce else "📥 Uložit PŘÍJEM"
-            
-            if st.button(btn_lbl, type="primary", use_container_width=True):
-                execute_query("INSERT INTO dodavky_inventura (hnojivo_id, datum, mnozstvi_kg_l, typ) VALUES (%s, %s, %s, %s)", (h_dict[sel_h], dt, mn, typ_sql))
-                st.toast("Záznam uložen!", icon="💾"); st.rerun()
+        typ_skladu = st.radio("Akce:", ["📋 Hromadná inventura", "🚛 Příjem zboží (Jednotlivě)"], horizontal=True, label_visibility="collapsed")
 
+        # --- 1. HROMADNÁ INVENTURA ---
+        if typ_skladu == "📋 Hromadná inventura":
+            st.subheader("Hromadná inventura")
+            
+            # 1. Datum pro všechny
+            inv_datum = st.date_input("Datum inventury:", value=date.today(), format="DD.MM.YYYY")
+            
+            st.info("Zadejte zjištěné stavy. Nevyplněná pole se neuloží.")
+            
+            # 2. Načtení hnojiv seřazených dle pořadí
+            # COALESCE(poradi, 999) zajistí, že co nemá pořadí, bude na konci
+            hnojiva_list = execute_query("""
+                SELECT id, nazev, jednotka 
+                FROM hnojivo 
+                WHERE stredisko_id=%s 
+                ORDER BY COALESCE(poradi, 999) ASC, nazev ASC
+            """, (st.session_state['stredisko_id'],), fetch=True)
+
+            if hnojiva_list:
+                with st.form("bulk_inventura_form"):
+                    input_values = {}
+                    
+                    # Procházíme hnojiva a děláme inputy
+                    for h_id, h_nazev, h_jedn in hnojiva_list:
+                        col_a, col_b = st.columns([3, 2])
+                        with col_a:
+                            st.write(f"**{h_nazev}**")
+                        with col_b:
+                            # Používáme text_input s konverzí, protože number_input má default 0.00
+                            # Chceme rozeznat "nic" (None) od "0"
+                            val = st.number_input(
+                                f"Stav ({h_jedn})", 
+                                key=f"inv_{h_id}", 
+                                min_value=0.0, 
+                                step=10.0, 
+                                value=None,  # Defaultně prázdné
+                                placeholder="Zadej..."
+                            )
+                            input_values[h_id] = val
+                    
+                    st.markdown("---")
+                    submitted = st.form_submit_button("💾 ULOŽIT CELOU INVENTURU", type="primary", use_container_width=True)
+                    
+                    if submitted:
+                        count = 0
+                        for hid, mnozstvi in input_values.items():
+                            if mnozstvi is not None: # Uložíme jen to, co uživatel vyplnil
+                                execute_query(
+                                    "INSERT INTO dodavky_inventura (hnojivo_id, datum, mnozstvi_kg_l, typ) VALUES (%s, %s, %s, 'inventura')",
+                                    (hid, inv_datum, mnozstvi)
+                                )
+                                count += 1
+                        
+                        if count > 0:
+                            st.toast(f"Uloženo {count} položek!", icon="✅")
+                            # st.rerun() by tady vymazalo formulář, což je asi dobře
+                        else:
+                            st.warning("Nevyplnili jste žádné množství.")
+
+        # --- 2. PŘÍJEM ZBOŽÍ (JEDNOTLIVĚ) ---
+        else:
+            st.subheader("Příjem zboží")
+            hnojiva = execute_query("SELECT id, nazev FROM hnojivo WHERE stredisko_id=%s ORDER BY nazev", (st.session_state['stredisko_id'],), fetch=True)
+            
+            if hnojiva:
+                h_dict = {h[1]: h[0] for h in hnojiva}
+                sel_h = st.selectbox("Hnojivo:", list(h_dict.keys()))
+                mn = st.number_input("Množství (kg/l):", min_value=0.0, step=10.0, format="%g")
+                dt = st.date_input("Datum pohybu:", value=date.today(), format="DD.MM.YYYY")
+                
+                if st.button("📥 Uložit PŘÍJEM", type="primary", use_container_width=True):
+                    execute_query("INSERT INTO dodavky_inventura (hnojivo_id, datum, mnozstvi_kg_l, typ) VALUES (%s, %s, %s, 'dodavka')", (h_dict[sel_h], dt, mn))
+                    st.toast("Příjem uložen!", icon="🚚")
+
+        # --- 3. ADMIN: ŘAZENÍ HNOJIV ---
+        if st.session_state.get('role') == 'admin':
+            with st.expander("⚙️ Správa pořadí hnojiv (Admin)"):
+                st.info("Změňte čísla v sloupci 'Pořadí' a klikněte na Uložit změny.")
+                
+                # Načteme data do DataFrame
+                data_hnojiva = execute_query("""
+                    SELECT id, nazev, COALESCE(poradi, 0) as poradi 
+                    FROM hnojivo 
+                    WHERE stredisko_id=%s 
+                    ORDER BY poradi ASC, nazev ASC
+                """, (st.session_state['stredisko_id'],), fetch=True)
+                
+                if data_hnojiva:
+                    df_hnojiva = pd.DataFrame(data_hnojiva, columns=["ID", "Název", "Pořadí"])
+                    
+                    # Data editor umožňuje editovat tabulku přímo
+                    edited_df = st.data_editor(
+                        df_hnojiva, 
+                        column_config={
+                            "ID": st.column_config.NumberColumn(disabled=True),
+                            "Název": st.column_config.TextColumn(disabled=True),
+                            "Pořadí": st.column_config.NumberColumn(min_value=0, step=1, help="Menší číslo = výše v seznamu")
+                        },
+                        hide_index=True,
+                        use_container_width=True
+                    )
+                    
+                    if st.button("💾 Uložit nové pořadí"):
+                        # Projdeme upravený dataframe a uložíme změny
+                        for index, row in edited_df.iterrows():
+                            # Porovnáme s původním, abychom neukládali zbytečně, ale update všech je bezpečnější pro konzistenci
+                            execute_query("UPDATE hnojivo SET poradi=%s WHERE id=%s", (row['Pořadí'], row['ID']))
+                        
+                        st.toast("Pořadí aktualizováno!", icon="✅")
+                        st.rerun()
+
+        # --- HISTORIE ---
         st.markdown("---")
         st.subheader("Poslední pohyby")
         hist = execute_query("""
@@ -174,24 +270,16 @@ else:
         
         if hist:
             df = pd.DataFrame(hist, columns=["ID", "Datum", "Hnojivo", "Množství", "Typ"])
-            
-            # FORMATOVÁNÍ DAT
             df["Datum"] = pd.to_datetime(df["Datum"]).dt.strftime("%d.%m.%Y")
-            
-            # APLIKACE ČISTÉHO ČÍSLA (bez nul)
             df["Množství"] = df["Množství"].apply(clean_number)
-            
             st.dataframe(df, use_container_width=True, hide_index=True)
             
             with st.expander("🗑️ Smazat záznam (při chybě)"):
                 opts = {}
                 for r in hist:
                     datum_str = r[1].strftime("%d.%m.%Y")
-                    # I tady použijeme clean_number pro hezčí výpis v selectboxu
-                    mnozstvi_nice = clean_number(r[3])
-                    label = f"{datum_str} | {r[2]} ({mnozstvi_nice} kg)"
+                    label = f"{datum_str} | {r[2]} ({clean_number(r[3])} kg) - {r[4]}"
                     opts[label] = r[0]
-                    
                 del_sel = st.selectbox("Vyber záznam:", list(opts.keys()))
                 if st.button(f"❌ Smazat záznam"):
                     execute_query("DELETE FROM dodavky_inventura WHERE id=%s", (opts[del_sel],))
@@ -200,8 +288,13 @@ else:
     # --- TAB 3: RECEPTY DETAIL ---
     with tab3:
         st.header("Složení receptů")
+        recepty = execute_query("SELECT id, nazev FROM recept WHERE stredisko_id=%s ORDER BY nazev", (st.session_state['stredisko_id'],), fetch=True)
         if recepty:
+            r_dict = {r[1]: r[0] for r in recepty}
             sel_view = st.selectbox("Zobrazit:", list(r_dict.keys()), key="v_r")
+            
+            # Zde také použijeme řazení podle pořadí, pokud existuje v recept_polozka
+            # Ale ve webové verzi stačí podle názvu nebo tanku
             items = execute_query("""
                 SELECT rp.tank, h.nazev, rp.mnozstvi_na_1000l, h.jednotka 
                 FROM recept_polozka rp JOIN hnojivo h ON rp.hnojivo_id=h.id 
@@ -210,12 +303,9 @@ else:
             
             if items:
                 c_a, c_b = st.columns(2)
-                
-                # Funkce pro vytvoření hezké tabulky
                 def make_nice_table(data_items):
                     if not data_items: return None
                     df_temp = pd.DataFrame(data_items, columns=["T", "Hnojivo", "Množství", "J."])
-                    # Aplikujeme čištění čísel
                     df_temp["Množství"] = df_temp["Množství"].apply(clean_number)
                     return df_temp[["Hnojivo", "Množství", "J."]]
 
