@@ -31,11 +31,10 @@ st.markdown("""
     div.stButton > button[kind="primary"] {
         background-color: #2ECC71; color: #0E1117; border: none;
     }
-    .stTabs [data-baseweb="tab-list"] { background-color: #1E2329; padding: 10px; border-radius: 10px 10px 0 0; gap: 5px; }
-    .stTabs [data-baseweb="tab"] { color: #888888; font-weight: bold; }
-    .stTabs [aria-selected="true"] { color: #2ECC71 !important; border-bottom-color: #2ECC71 !important; }
-    .stTextInput input, .stNumberInput input, .stSelectbox div, .stDateInput input {
-        background-color: #262730 !important; color: white !important; border-radius: 5px;
+    /* Vylepšení tabulky pro lepší čitelnost */
+    [data-testid="stDataEditor"] {
+        border: 1px solid #333;
+        border-radius: 5px;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -62,24 +61,16 @@ def execute_query(query, params=None, fetch=False):
         st.error(f"Chyba databáze: {e}")
         return None
 
-# --- KONTROLA STRUKTURY DB (PRO ŘAZENÍ) ---
 def check_db_structure():
-    # Zajistíme, že existuje sloupec 'poradi' v tabulce hnojivo
-    try:
-        execute_query("ALTER TABLE hnojivo ADD COLUMN IF NOT EXISTS poradi INTEGER DEFAULT 0")
-    except:
-        pass
+    try: execute_query("ALTER TABLE hnojivo ADD COLUMN IF NOT EXISTS poradi INTEGER DEFAULT 0")
+    except: pass
 
 check_db_structure()
 
-# --- POMOCNÁ FUNKCE PRO HEZKÁ ČÍSLA ---
 def clean_number(val):
     if val is None: return ""
-    try:
-        formatted = f"{float(val):g}"
-        return formatted.replace(".", ",")
-    except:
-        return str(val)
+    try: return f"{float(val):g}".replace(".", ",")
+    except: return str(val)
 
 # --- 4. HLAVNÍ LOGIKA ---
 st.title("🌱 Sklad Hnojiv (Mobil)")
@@ -87,43 +78,31 @@ st.title("🌱 Sklad Hnojiv (Mobil)")
 if 'logged_in' not in st.session_state:
     st.session_state['logged_in'] = False
 
-# A) PŘIHLAŠOVACÍ OBRAZOVKA
+# A) LOGIN
 if not st.session_state['logged_in']:
     st.markdown("### 🔐 Přihlášení")
     try:
         data = execute_query("SELECT id, nazev FROM stredisko ORDER BY nazev", fetch=True)
         strediska_dict = {row[1]: row[0] for row in data} if data else {}
-    except:
-        strediska_dict = {}
-        st.error("Nelze se připojit k databázi.")
+    except: strediska_dict = {}; st.error("Chyba DB")
 
     if strediska_dict:
         selected_name = st.selectbox("Středisko", list(strediska_dict.keys()))
         selected_id = strediska_dict[selected_name]
-        username = st.text_input("Jméno")
-        password = st.text_input("Heslo", type="password")
-        
+        u = st.text_input("Jméno"); p = st.text_input("Heslo", type="password")
         if st.button("Vstoupit", type="primary", use_container_width=True):
-            user_data = execute_query(
-                "SELECT id, role FROM users WHERE username=%s AND password=%s AND stredisko_id=%s",
-                (username, password, selected_id), fetch=True
-            )
-            if user_data:
-                st.session_state['logged_in'] = True
-                st.session_state['user_id'] = user_data[0][0]
-                st.session_state['role'] = user_data[0][1]
-                st.session_state['stredisko_id'] = selected_id
-                st.session_state['stredisko_name'] = selected_name
+            ud = execute_query("SELECT id, role FROM users WHERE username=%s AND password=%s AND stredisko_id=%s", (u, p, selected_id), fetch=True)
+            if ud:
+                st.session_state['logged_in'] = True; st.session_state['role'] = ud[0][1]
+                st.session_state['stredisko_id'] = selected_id; st.session_state['stredisko_name'] = selected_name
                 st.rerun()
-            else:
-                st.error("Neplatné údaje!")
+            else: st.error("Neplatné údaje")
 
-# B) APLIKACE PRO PŘIHLÁŠENÉ
+# B) APLIKACE
 else:
     c1, c2 = st.columns([3, 1])
     c1.info(f"📍 {st.session_state['stredisko_name']}")
-    if c2.button("Odhlásit"):
-        st.session_state['logged_in'] = False; st.rerun()
+    if c2.button("Odhlásit"): st.session_state['logged_in'] = False; st.rerun()
 
     tab1, tab2, tab3 = st.tabs(["💧 MÍCHÁNÍ", "📦 SKLAD", "🧪 RECEPTY"])
 
@@ -131,194 +110,139 @@ else:
     with tab1:
         st.header("Zapsat míchání")
         recepty = execute_query("SELECT id, nazev FROM recept WHERE stredisko_id=%s ORDER BY nazev", (st.session_state['stredisko_id'],), fetch=True)
-        
         if recepty:
             r_dict = {r[1]: r[0] for r in recepty}
             sel_r = st.selectbox("Recept:", list(r_dict.keys()))
-            voda = st.number_input("Voda (litry):", min_value=0, step=100, value=1000, format="%d")
-            datum = st.date_input("Datum míchání:", value=date.today(), format="DD.MM.YYYY")
-            
-            if st.button("✅ Uložit míchání", type="primary", use_container_width=True):
+            voda = st.number_input("Voda (l):", step=100, value=1000)
+            datum = st.date_input("Datum:", value=date.today(), key="d_mix")
+            if st.button("Uložit míchání", type="primary", use_container_width=True):
                 execute_query("INSERT INTO michani (recept_id, datum, objem_vody_l) VALUES (%s, %s, %s)", (r_dict[sel_r], datum, voda))
                 st.toast("Uloženo!", icon="✅")
-        else:
-            st.warning("Žádné recepty.")
+        else: st.warning("Žádné recepty.")
 
-    # --- TAB 2: SKLAD (HROMADNÁ INVENTURA + PŘÍJEM + ŘAZENÍ) ---
+    # --- TAB 2: SKLAD (TABULKA) ---
     with tab2:
-        typ_skladu = st.radio("Akce:", ["📋 Hromadná inventura", "🚛 Příjem zboží (Jednotlivě)"], horizontal=True, label_visibility="collapsed")
+        # PŘEJMENOVÁNO DLE POŽADAVKU
+        mod = st.radio("Režim:", ["Inventura", "Příjem zboží"], horizontal=True, label_visibility="collapsed")
 
-        # --- 1. HROMADNÁ INVENTURA ---
-        if typ_skladu == "📋 Hromadná inventura":
+        # 1. INVENTURA JAKO TABULKA
+        if mod == "Inventura":
             st.subheader("Hromadná inventura")
-            
-            # 1. Datum pro všechny
-            inv_datum = st.date_input("Datum inventury:", value=date.today(), format="DD.MM.YYYY")
-            
-            st.info("Zadejte zjištěné stavy. Nevyplněná pole se neuloží.")
-            
-            # 2. Načtení hnojiv seřazených dle pořadí
-            # COALESCE(poradi, 999) zajistí, že co nemá pořadí, bude na konci
-            hnojiva_list = execute_query("""
+            inv_datum = st.date_input("Datum inventury:", value=date.today())
+            st.info("Doplňte stavy do tabulky. Co necháte prázdné, to se neuloží.")
+
+            # Načteme data seřazená podle pořadí
+            hnojiva_data = execute_query("""
                 SELECT id, nazev, jednotka 
-                FROM hnojivo 
-                WHERE stredisko_id=%s 
+                FROM hnojivo WHERE stredisko_id=%s 
                 ORDER BY COALESCE(poradi, 999) ASC, nazev ASC
             """, (st.session_state['stredisko_id'],), fetch=True)
 
-            if hnojiva_list:
-                with st.form("bulk_inventura_form"):
-                    input_values = {}
-                    
-                    # Procházíme hnojiva a děláme inputy
-                    for h_id, h_nazev, h_jedn in hnojiva_list:
-                        col_a, col_b = st.columns([3, 2])
-                        with col_a:
-                            st.write(f"**{h_nazev}**")
-                        with col_b:
-                            # Používáme text_input s konverzí, protože number_input má default 0.00
-                            # Chceme rozeznat "nic" (None) od "0"
-                            val = st.number_input(
-                                f"Stav ({h_jedn})", 
-                                key=f"inv_{h_id}", 
-                                min_value=0.0, 
-                                step=10.0, 
-                                value=None,  # Defaultně prázdné
-                                placeholder="Zadej..."
-                            )
-                            input_values[h_id] = val
-                    
-                    st.markdown("---")
-                    submitted = st.form_submit_button("💾 ULOŽIT CELOU INVENTURU", type="primary", use_container_width=True)
-                    
-                    if submitted:
-                        count = 0
-                        for hid, mnozstvi in input_values.items():
-                            if mnozstvi is not None: # Uložíme jen to, co uživatel vyplnil
-                                execute_query(
-                                    "INSERT INTO dodavky_inventura (hnojivo_id, datum, mnozstvi_kg_l, typ) VALUES (%s, %s, %s, 'inventura')",
-                                    (hid, inv_datum, mnozstvi)
-                                )
-                                count += 1
-                        
-                        if count > 0:
-                            st.toast(f"Uloženo {count} položek!", icon="✅")
-                            # st.rerun() by tady vymazalo formulář, což je asi dobře
-                        else:
-                            st.warning("Nevyplnili jste žádné množství.")
+            if hnojiva_data:
+                # Vytvoříme DataFrame pro editaci
+                # Sloupec "Stav" necháme prázdný (None), aby uživatel viděl, co vyplnil
+                df_source = pd.DataFrame(hnojiva_data, columns=["ID", "Hnojivo", "Jednotka"])
+                df_source["Stav"] = None 
 
-        # --- 2. PŘÍJEM ZBOŽÍ (JEDNOTLIVĚ) ---
+                # Zobrazíme editovatelnou tabulku
+                edited_df = st.data_editor(
+                    df_source,
+                    column_config={
+                        "ID": None, # Skryjeme ID
+                        "Hnojivo": st.column_config.TextColumn(disabled=True), # Název nejde měnit
+                        "Jednotka": st.column_config.TextColumn(disabled=True, width="small"),
+                        "Stav": st.column_config.NumberColumn(
+                            "Zjištěný stav", 
+                            min_value=0, 
+                            step=10, 
+                            help="Zadejte množství",
+                            required=False
+                        )
+                    },
+                    hide_index=True,
+                    use_container_width=True,
+                    height=(len(hnojiva_data) * 35) + 38 # Dynamická výška
+                )
+
+                if st.button("💾 ULOŽIT INVENTURU", type="primary", use_container_width=True):
+                    cnt = 0
+                    for index, row in edited_df.iterrows():
+                        # Uložíme jen řádky, kde uživatel něco vyplnil (není to NaN/None)
+                        if pd.notna(row["Stav"]) and row["Stav"] != "":
+                            execute_query(
+                                "INSERT INTO dodavky_inventura (hnojivo_id, datum, mnozstvi_kg_l, typ) VALUES (%s, %s, %s, 'inventura')",
+                                (row["ID"], inv_datum, float(row["Stav"]))
+                            )
+                            cnt += 1
+                    
+                    if cnt > 0:
+                        st.toast(f"Uloženo {cnt} položek!", icon="✅")
+                        st.rerun() # Obnoví stránku a vymaže tabulku
+                    else:
+                        st.warning("Tabulka je prázdná.")
+
+        # 2. PŘÍJEM ZBOŽÍ (JEDNOTLIVĚ)
         else:
             st.subheader("Příjem zboží")
-            hnojiva = execute_query("SELECT id, nazev FROM hnojivo WHERE stredisko_id=%s ORDER BY nazev", (st.session_state['stredisko_id'],), fetch=True)
-            
-            if hnojiva:
-                h_dict = {h[1]: h[0] for h in hnojiva}
-                sel_h = st.selectbox("Hnojivo:", list(h_dict.keys()))
-                mn = st.number_input("Množství (kg/l):", min_value=0.0, step=10.0, format="%g")
-                dt = st.date_input("Datum pohybu:", value=date.today(), format="DD.MM.YYYY")
-                
-                if st.button("📥 Uložit PŘÍJEM", type="primary", use_container_width=True):
-                    execute_query("INSERT INTO dodavky_inventura (hnojivo_id, datum, mnozstvi_kg_l, typ) VALUES (%s, %s, %s, 'dodavka')", (h_dict[sel_h], dt, mn))
+            hd = execute_query("SELECT id, nazev FROM hnojivo WHERE stredisko_id=%s ORDER BY nazev", (st.session_state['stredisko_id'],), fetch=True)
+            if hd:
+                h_dict = {h[1]: h[0] for h in hd}
+                sh = st.selectbox("Hnojivo:", list(h_dict.keys()))
+                mn = st.number_input("Množství (+):", min_value=0.0, step=50.0)
+                dt = st.date_input("Datum:", value=date.today())
+                if st.button("Uložit PŘÍJEM", type="primary", use_container_width=True):
+                    execute_query("INSERT INTO dodavky_inventura (hnojivo_id, datum, mnozstvi_kg_l, typ) VALUES (%s, %s, %s, 'dodavka')", (h_dict[sh], dt, mn))
                     st.toast("Příjem uložen!", icon="🚚")
 
-        # --- 3. ADMIN: ŘAZENÍ HNOJIV ---
+        # 3. ADMIN: ŘAZENÍ (TABULKA)
         if st.session_state.get('role') == 'admin':
-            with st.expander("⚙️ Správa pořadí hnojiv (Admin)"):
-                st.info("Změňte čísla v sloupci 'Pořadí' a klikněte na Uložit změny.")
+            with st.expander("⚙️ Upravit pořadí hnojiv (Admin)"):
+                st.caption("Přepište čísla v sloupci 'Pořadí' (1 = nahoře). Poté klikněte na Uložit.")
                 
-                # Načteme data do DataFrame
-                data_hnojiva = execute_query("""
-                    SELECT id, nazev, COALESCE(poradi, 0) as poradi 
-                    FROM hnojivo 
-                    WHERE stredisko_id=%s 
-                    ORDER BY poradi ASC, nazev ASC
-                """, (st.session_state['stredisko_id'],), fetch=True)
+                # Načteme data pro admina
+                dh = execute_query("SELECT id, nazev, COALESCE(poradi, 0) as poradi FROM hnojivo WHERE stredisko_id=%s ORDER BY poradi ASC, nazev ASC", (st.session_state['stredisko_id'],), fetch=True)
                 
-                if data_hnojiva:
-                    df_hnojiva = pd.DataFrame(data_hnojiva, columns=["ID", "Název", "Pořadí"])
+                if dh:
+                    df_sort = pd.DataFrame(dh, columns=["ID", "Hnojivo", "Pořadí"])
                     
-                    # Data editor umožňuje editovat tabulku přímo
-                    edited_df = st.data_editor(
-                        df_hnojiva, 
+                    # Tabulka pro přepisování čísel (Drag&Drop nativně Streamlit neumí, toto je nejlepší alternativa)
+                    edited_sort = st.data_editor(
+                        df_sort,
                         column_config={
-                            "ID": st.column_config.NumberColumn(disabled=True),
-                            "Název": st.column_config.TextColumn(disabled=True),
-                            "Pořadí": st.column_config.NumberColumn(min_value=0, step=1, help="Menší číslo = výše v seznamu")
+                            "ID": None,
+                            "Hnojivo": st.column_config.TextColumn(disabled=True),
+                            "Pořadí": st.column_config.NumberColumn(min_value=0, step=1, width="small")
                         },
                         hide_index=True,
                         use_container_width=True
                     )
                     
-                    if st.button("💾 Uložit nové pořadí"):
-                        # Projdeme upravený dataframe a uložíme změny
-                        for index, row in edited_df.iterrows():
-                            # Porovnáme s původním, abychom neukládali zbytečně, ale update všech je bezpečnější pro konzistenci
-                            execute_query("UPDATE hnojivo SET poradi=%s WHERE id=%s", (row['Pořadí'], row['ID']))
-                        
-                        st.toast("Pořadí aktualizováno!", icon="✅")
+                    if st.button("✅ Uložit nové pořadí"):
+                        for i, r in edited_sort.iterrows():
+                            execute_query("UPDATE hnojivo SET poradi=%s WHERE id=%s", (r["Pořadí"], r["ID"]))
+                        st.toast("Pořadí uloženo!", icon="🔄")
                         st.rerun()
 
-        # --- HISTORIE ---
+        # HISTORIE
         st.markdown("---")
-        st.subheader("Poslední pohyby")
-        hist = execute_query("""
-            SELECT di.id, di.datum, h.nazev, di.mnozstvi_kg_l, di.typ 
-            FROM dodavky_inventura di JOIN hnojivo h ON di.hnojivo_id=h.id 
-            WHERE h.stredisko_id=%s ORDER BY di.id DESC LIMIT 10
-        """, (st.session_state['stredisko_id'],), fetch=True)
-        
+        hist = execute_query("SELECT di.id, di.datum, h.nazev, di.mnozstvi_kg_l, di.typ FROM dodavky_inventura di JOIN hnojivo h ON di.hnojivo_id=h.id WHERE h.stredisko_id=%s ORDER BY di.id DESC LIMIT 5", (st.session_state['stredisko_id'],), fetch=True)
         if hist:
-            df = pd.DataFrame(hist, columns=["ID", "Datum", "Hnojivo", "Množství", "Typ"])
-            df["Datum"] = pd.to_datetime(df["Datum"]).dt.strftime("%d.%m.%Y")
-            df["Množství"] = df["Množství"].apply(clean_number)
-            st.dataframe(df, use_container_width=True, hide_index=True)
-            
-            with st.expander("🗑️ Smazat záznam (při chybě)"):
-                opts = {}
-                for r in hist:
-                    datum_str = r[1].strftime("%d.%m.%Y")
-                    label = f"{datum_str} | {r[2]} ({clean_number(r[3])} kg) - {r[4]}"
-                    opts[label] = r[0]
-                del_sel = st.selectbox("Vyber záznam:", list(opts.keys()))
-                if st.button(f"❌ Smazat záznam"):
-                    execute_query("DELETE FROM dodavky_inventura WHERE id=%s", (opts[del_sel],))
-                    st.warning("Smazáno."); st.rerun()
+            st.caption("Poslední pohyby:")
+            for r in hist:
+                icon = "📝" if r[4] == 'inventura' else "🚚"
+                st.text(f"{icon} {r[1].strftime('%d.%m')} | {r[2]}: {clean_number(r[3])}")
 
-    # --- TAB 3: RECEPTY DETAIL ---
+    # --- TAB 3: RECEPTY ---
     with tab3:
         st.header("Složení receptů")
-        recepty = execute_query("SELECT id, nazev FROM recept WHERE stredisko_id=%s ORDER BY nazev", (st.session_state['stredisko_id'],), fetch=True)
         if recepty:
-            r_dict = {r[1]: r[0] for r in recepty}
-            sel_view = st.selectbox("Zobrazit:", list(r_dict.keys()), key="v_r")
-            
-            # Zde také použijeme řazení podle pořadí, pokud existuje v recept_polozka
-            # Ale ve webové verzi stačí podle názvu nebo tanku
-            items = execute_query("""
-                SELECT rp.tank, h.nazev, rp.mnozstvi_na_1000l, h.jednotka 
-                FROM recept_polozka rp JOIN hnojivo h ON rp.hnojivo_id=h.id 
-                WHERE rp.recept_id=%s ORDER BY rp.tank, h.nazev
-            """, (r_dict[sel_view],), fetch=True)
-            
-            if items:
-                c_a, c_b = st.columns(2)
-                def make_nice_table(data_items):
-                    if not data_items: return None
-                    df_temp = pd.DataFrame(data_items, columns=["T", "Hnojivo", "Množství", "J."])
-                    df_temp["Množství"] = df_temp["Množství"].apply(clean_number)
-                    return df_temp[["Hnojivo", "Množství", "J."]]
-
-                with c_a:
-                    st.markdown("### 🔵 TANK A")
-                    ta = [i for i in items if i[0] == 'A']
-                    df_a = make_nice_table(ta)
-                    if df_a is not None: st.table(df_a)
-                    else: st.info("Prázdný")
-
-                with c_b:
-                    st.markdown("### 🟢 TANK B")
-                    tb = [i for i in items if i[0] == 'B']
-                    df_b = make_nice_table(tb)
-                    if df_b is not None: st.table(df_b)
-                    else: st.info("Prázdný")
+            rv = st.selectbox("Recept:", list(r_dict.keys()), key="v_r")
+            its = execute_query("SELECT rp.tank, h.nazev, rp.mnozstvi_na_1000l, h.jednotka FROM recept_polozka rp JOIN hnojivo h ON rp.hnojivo_id=h.id WHERE rp.recept_id=%s ORDER BY rp.tank, h.nazev", (r_dict[rv],), fetch=True)
+            if its:
+                ca, cb = st.columns(2)
+                with ca:
+                    st.info("🔵 TANK A")
+                    st.table(pd.DataFrame([i for i in its if i[0]=='A'], columns=["T","Hnojivo","Množství","J."])[["Hnojivo","Množství","J."]])
+                with cb:
+                    st.info("🟢 TANK B")
+                    st.table(pd.DataFrame([i for i in its if i[0]=='B'], columns=["T","Hnojivo","Množství","J."])[["Hnojivo","Množství","J."]])
