@@ -3,6 +3,7 @@ import psycopg2
 import pandas as pd
 from datetime import date
 import locale
+import time  # Přidáno pro drobná zpožděni (toasty, cookies)
 
 # --- NASTAVENÍ ČEŠTINY ---
 try: locale.setlocale(locale.LC_ALL, "cs_CZ.UTF-8")
@@ -86,6 +87,18 @@ st.title("🌱 Sklad Hnojiv (Mobil)")
 
 if 'logged_in' not in st.session_state: st.session_state['logged_in'] = False
 
+# --- INICIALIZACE COOKIES (Pro zapamatování přihlášení) ---
+try:
+    import extra_streamlit_components as stx
+    cookie_manager = stx.CookieManager()
+    saved_s = cookie_manager.get(cookie="rem_stredisko")
+    saved_u = cookie_manager.get(cookie="rem_user")
+    saved_p = cookie_manager.get(cookie="rem_pass")
+except ImportError:
+    cookie_manager = None
+    saved_s, saved_u, saved_p = None, None, None
+    st.warning("💡 Pro funkci zapamatování hesla prosím přidejte `extra-streamlit-components` do souboru requirements.txt.")
+
 # A) LOGIN
 if not st.session_state['logged_in']:
     st.markdown("### 🔐 Přihlášení")
@@ -95,30 +108,56 @@ if not st.session_state['logged_in']:
     except: sd = {}
     
     if sd:
-        s_name = st.selectbox("Středisko", list(sd.keys()))
-        u = st.text_input("Jméno (Login)") # Upraven popisek
-        p = st.text_input("Heslo", type="password")
-        if st.button("Vstoupit", type="primary", use_container_width=True):
-            # ZMĚNA: Načítáme i cele_jmeno
-            ud = execute_query("SELECT id, role, cele_jmeno FROM users WHERE username=%s AND password=%s AND stredisko_id=%s", (u, p, sd[s_name]), fetch=True)
-            if ud:
-                user_id_db = ud[0][0]
-                role_db = ud[0][1]
-                cele_jmeno_db = ud[0][2]
-                
-                # Pokud není celé jméno, použijeme login (u)
-                display_name = cele_jmeno_db if cele_jmeno_db else u
+        # Zajištění správného indexu pro předvybrané středisko z cookies
+        s_index = 0
+        if saved_s in sd:
+            s_index = list(sd.keys()).index(saved_s)
 
-                st.session_state.update({
-                    'logged_in': True, 
-                    'user_id': user_id_db,
-                    'role': role_db, 
-                    'display_name': display_name, # Uložíme si hezké jméno
-                    'stredisko_id': sd[s_name], 
-                    'stredisko_name': s_name
-                })
-                st.rerun()
-            else: st.error("Chyba: Špatné jméno nebo heslo")
+        # Formulář pomůže i vestavěným správcům hesel v prohlížeči
+        with st.form("login_form"):
+            s_name = st.selectbox("Středisko", list(sd.keys()), index=s_index)
+            u = st.text_input("Jméno (Login)", value=saved_u if saved_u else "")
+            p = st.text_input("Heslo", type="password", value=saved_p if saved_p else "")
+            
+            zapamatovat = st.checkbox("Zapamatovat pro příští přihlášení", value=bool(saved_u))
+            
+            submit = st.form_submit_button("Vstoupit", type="primary", use_container_width=True)
+            
+            if submit:
+                # ZMĚNA: Načítáme i cele_jmeno
+                ud = execute_query("SELECT id, role, cele_jmeno FROM users WHERE username=%s AND password=%s AND stredisko_id=%s", (u, p, sd[s_name]), fetch=True)
+                if ud:
+                    # Správa zapamatování
+                    if cookie_manager:
+                        if zapamatovat:
+                            # Uložíme na 365 dní
+                            cookie_manager.set("rem_stredisko", s_name, max_age=365)
+                            cookie_manager.set("rem_user", u, max_age=365)
+                            cookie_manager.set("rem_pass", p, max_age=365)
+                        else:
+                            # Smažeme pokud uživatel odškrtl
+                            cookie_manager.delete("rem_stredisko")
+                            cookie_manager.delete("rem_user")
+                            cookie_manager.delete("rem_pass")
+                        time.sleep(0.5) # Krátká pauza, aby se cookies stihly zapsat do prohlížeče
+
+                    user_id_db = ud[0][0]
+                    role_db = ud[0][1]
+                    cele_jmeno_db = ud[0][2]
+                    
+                    # Pokud není celé jméno, použijeme login (u)
+                    display_name = cele_jmeno_db if cele_jmeno_db else u
+
+                    st.session_state.update({
+                        'logged_in': True, 
+                        'user_id': user_id_db,
+                        'role': role_db, 
+                        'display_name': display_name, # Uložíme si hezké jméno
+                        'stredisko_id': sd[s_name], 
+                        'stredisko_name': s_name
+                    })
+                    st.rerun()
+                else: st.error("Chyba: Špatné jméno nebo heslo")
 
 # B) HLAVNÍ OBSAH
 else:
@@ -129,17 +168,15 @@ else:
 
     t1, t2, t3 = st.tabs(["💧 MÍCHÁNÍ", "📦 SKLAD", "🧪 RECEPTY"])
 
-# --- TAB 1: MÍCHÁNÍ (DIAGNOSTICKÁ VERZE) ---
+    # --- TAB 1: MÍCHÁNÍ (DIAGNOSTICKÁ VERZE S POTVRZENÍM) ---
     with t1:
         st.header("Zapsat míchání")
         
-        # --- DIAGNOSTIKA: Vypíšeme si, koho systém vidí ---
         debug_uid = st.session_state.get('user_id')
         debug_name = st.session_state.get('display_name')
         
         if debug_uid is None:
             st.error("⛔ POZOR: Systém ztratil ID uživatele. Zkuste se odhlásit a znovu přihlásit.")
-        # ---------------------------------------------------
 
         recs = execute_query("SELECT id, nazev FROM recept WHERE stredisko_id=%s ORDER BY nazev", (st.session_state['stredisko_id'],), fetch=True)
         if recs:
@@ -148,25 +185,35 @@ else:
             vo = st.number_input("Voda (l):", step=100, value=1000)
             da = st.date_input("Datum:", value=date.today(), key="d_m")
             
-            # Tlačítko bude aktivní jen pokud máme ID uživatele
             btn_disabled = (debug_uid is None)
             
+            # Tlačítko nyní jen přepne stav na zobrazení potvrzovacího dialogu
             if st.button("Uložit míchání", type="primary", use_container_width=True, disabled=btn_disabled):
                 if debug_uid is None:
                     st.error("Chyba: Nelze uložit bez ID uživatele!")
                     st.stop()
+                st.session_state['confirm_mix'] = True
 
-                # Uložení do DB
-                execute_query(
-                    "INSERT INTO michani (recept_id, datum, objem_vody_l, user_id) VALUES (%s, %s, %s, %s)", 
-                    (rd[sr], da, vo, debug_uid)
-                )
+            # Sekce potvrzení se ukáže pouze po kliknutí na tlačítko výše
+            if st.session_state.get('confirm_mix', False):
+                st.warning("Opravdu uložit míchání?")
+                c_ano, c_ne = st.columns(2)
                 
-                # Hned po uložení vypíšeme potvrzení s ID
-                st.toast(f"Uloženo! (User ID: {debug_uid})", icon="✅")
-                # Pro jistotu vypíšeme i textově
-                st.success(f"Záznam uložen. Míchal uživatel ID: {debug_uid} ({debug_name})")
-                
+                if c_ano.button("ANO", type="primary", use_container_width=True):
+                    # Uložení do DB
+                    execute_query(
+                        "INSERT INTO michani (recept_id, datum, objem_vody_l, user_id) VALUES (%s, %s, %s, %s)", 
+                        (rd[sr], da, vo, debug_uid)
+                    )
+                    st.session_state['confirm_mix'] = False # Skryjeme potvrzení
+                    st.toast(f"Uloženo! (User ID: {debug_uid})", icon="✅")
+                    time.sleep(1) # Počkáme 1 sekundu, aby uživatel viděl zelené oznámení
+                    st.rerun() # Refreshne stránku a vyčistí okno
+                    
+                if c_ne.button("Storno", use_container_width=True):
+                    st.session_state['confirm_mix'] = False # Skryjeme potvrzení
+                    st.rerun()
+
         else: st.warning("Žádné recepty")
 
     # --- TAB 2: SKLAD ---
