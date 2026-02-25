@@ -129,13 +129,13 @@ if not st.session_state['logged_in']:
                 # ZMĚNA: Načítáme i cele_jmeno
                 ud = execute_query("SELECT id, role, cele_jmeno FROM users WHERE username=%s AND password=%s AND stredisko_id=%s", (u, p, sd[s_name]), fetch=True)
                 if ud:
-                    # Správa zapamatování
+# Správa zapamatování
                     if cookie_manager:
                         if zapamatovat:
-                            # Uložíme na 365 dní (přidány unikátní klíče zabraňující chybě DuplicateKey)
-                            cookie_manager.set("rem_stredisko", s_name, max_age=365, key="set_s")
-                            cookie_manager.set("rem_user", u, max_age=365, key="set_u")
-                            cookie_manager.set("rem_pass", p, max_age=365, key="set_p")
+                            # Uložíme na 365 dní (365 * 24 * 60 * 60 = 31536000 sekund)
+                            cookie_manager.set("rem_stredisko", s_name, max_age=31536000, key="set_s")
+                            cookie_manager.set("rem_user", u, max_age=31536000, key="set_u")
+                            cookie_manager.set("rem_pass", p, max_age=31536000, key="set_p")
                         else:
                             # Smažeme pokud uživatel odškrtl (přidány unikátní klíče)
                             cookie_manager.delete("rem_stredisko", key="del_s")
@@ -320,6 +320,7 @@ else:
                 with cb:
                     st.info("🟢 TANK B")
                     st.table(pd.DataFrame([i for i in its if i[0]=='B'], columns=["T","Hnojivo","Množství","J."])[["Hnojivo","Množství","J."]])
+
 
 
 
