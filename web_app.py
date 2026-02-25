@@ -157,7 +157,6 @@ if not st.session_state['logged_in']:
                     })
                     st.rerun()
                 else: st.error("Chyba: Špatné jméno nebo heslo")
-
 # B) HLAVNÍ OBSAH
 else:
     c1, c2 = st.columns([3, 1])
@@ -165,14 +164,37 @@ else:
     c1.info(f"📍 {st.session_state['stredisko_name']} | 👤 {st.session_state.get('display_name', '')}")
     if c2.button("Odhlásit"): st.session_state['logged_in'] = False; st.rerun()
 
+    # --- DEFINICE VYSKAKOVACÍHO OKNA ---
+    @st.dialog("⚠️ Potvrzení míchání")
+    def ukaz_potvrzeni(recept_id, recept_nazev, datum, objem_vody, user_id):
+        st.write("Opravdu chcete zapsat toto míchání do databáze?")
+        st.write(f"🧪 **Recept:** {recept_nazev}")
+        st.write(f"💧 **Voda:** {objem_vody} litrů")
+        st.write(f"📅 **Datum:** {datum.strftime('%d.%m.%Y')}")
+        
+        st.write("") # drobná mezera
+        c_ano, c_ne = st.columns(2)
+        
+        if c_ano.button("✅ ANO", type="primary", use_container_width=True):
+            execute_query(
+                "INSERT INTO michani (recept_id, datum, objem_vody_l, user_id) VALUES (%s, %s, %s, %s)", 
+                (recept_id, datum, objem_vody, user_id)
+            )
+            # Uložíme si informaci o úspěchu a zavřeme okno
+            st.session_state['mix_saved'] = True
+            st.rerun()
+            
+        if c_ne.button("❌ Storno", use_container_width=True):
+            st.rerun() # Pouze zavře okno
+    # -----------------------------------
+
     t1, t2, t3 = st.tabs(["💧 MÍCHÁNÍ", "📦 SKLAD", "🧪 RECEPTY"])
 
-    # --- TAB 1: MÍCHÁNÍ (DIAGNOSTICKÁ VERZE S POTVRZENÍM) ---
+    # --- TAB 1: MÍCHÁNÍ ---
     with t1:
         st.header("Zapsat míchání")
         
         debug_uid = st.session_state.get('user_id')
-        debug_name = st.session_state.get('display_name')
         
         if debug_uid is None:
             st.error("⛔ POZOR: Systém ztratil ID uživatele. Zkuste se odhlásit a znovu přihlásit.")
@@ -186,34 +208,21 @@ else:
             
             btn_disabled = (debug_uid is None)
             
-            # Tlačítko nyní jen přepne stav na zobrazení potvrzovacího dialogu
             if st.button("Uložit míchání", type="primary", use_container_width=True, disabled=btn_disabled):
                 if debug_uid is None:
                     st.error("Chyba: Nelze uložit bez ID uživatele!")
                     st.stop()
-                st.session_state['confirm_mix'] = True
-
-            # Sekce potvrzení se ukáže pouze po kliknutí na tlačítko výše
-            if st.session_state.get('confirm_mix', False):
-                st.warning("Opravdu uložit míchání?")
-                c_ano, c_ne = st.columns(2)
                 
-                if c_ano.button("ANO", type="primary", use_container_width=True):
-                    # Uložení do DB
-                    execute_query(
-                        "INSERT INTO michani (recept_id, datum, objem_vody_l, user_id) VALUES (%s, %s, %s, %s)", 
-                        (rd[sr], da, vo, debug_uid)
-                    )
-                    st.session_state['confirm_mix'] = False # Skryjeme potvrzení
-                    st.toast(f"Uloženo! (User ID: {debug_uid})", icon="✅")
-                    time.sleep(1) # Počkáme 1 sekundu, aby uživatel viděl zelené oznámení
-                    st.rerun() # Refreshne stránku a vyčistí okno
-                    
-                if c_ne.button("Storno", use_container_width=True):
-                    st.session_state['confirm_mix'] = False # Skryjeme potvrzení
-                    st.rerun()
+                # ZDE VYVOLÁME VYSKAKOVACÍ OKNO
+                ukaz_potvrzeni(rd[sr], sr, da, vo, debug_uid)
 
-        else: st.warning("Žádné recepty")
+        else: 
+            st.warning("Žádné recepty")
+            
+        # Úspěšná hláška, která se ukáže až po zavření vyskakovacího okna
+        if st.session_state.pop('mix_saved', False):
+            st.toast("Míchání uloženo!", icon="✅")
+            st.success("Záznam byl úspěšně zapsán do databáze.")
 
     # --- TAB 2: SKLAD ---
     with t2:
@@ -309,5 +318,6 @@ else:
                 with cb:
                     st.info("🟢 TANK B")
                     st.table(pd.DataFrame([i for i in its if i[0]=='B'], columns=["T","Hnojivo","Množství","J."])[["Hnojivo","Množství","J."]])
+
 
 
