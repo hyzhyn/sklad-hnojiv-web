@@ -129,18 +129,19 @@ if not st.session_state['logged_in']:
                 if ud:
                     # Správa zapamatování
                     if cookie_manager:
+                        # Správa zapamatování
+                    if cookie_manager:
                         if zapamatovat:
-                            # Uložíme na 365 dní
-                            cookie_manager.set("rem_stredisko", s_name, max_age=365)
-                            cookie_manager.set("rem_user", u, max_age=365)
-                            cookie_manager.set("rem_pass", p, max_age=365)
+                            # Uložíme na 365 dní (přidány unikátní klíče zabraňující chybě DuplicateKey)
+                            cookie_manager.set("rem_stredisko", s_name, max_age=365, key="set_s")
+                            cookie_manager.set("rem_user", u, max_age=365, key="set_u")
+                            cookie_manager.set("rem_pass", p, max_age=365, key="set_p")
                         else:
-                            # Smažeme pokud uživatel odškrtl
-                            cookie_manager.delete("rem_stredisko")
-                            cookie_manager.delete("rem_user")
-                            cookie_manager.delete("rem_pass")
+                            # Smažeme pokud uživatel odškrtl (přidány unikátní klíče)
+                            cookie_manager.delete("rem_stredisko", key="del_s")
+                            cookie_manager.delete("rem_user", key="del_u")
+                            cookie_manager.delete("rem_pass", key="del_p")
                         time.sleep(0.5) # Krátká pauza, aby se cookies stihly zapsat do prohlížeče
-
                     user_id_db = ud[0][0]
                     role_db = ud[0][1]
                     cele_jmeno_db = ud[0][2]
@@ -310,3 +311,4 @@ else:
                 with cb:
                     st.info("🟢 TANK B")
                     st.table(pd.DataFrame([i for i in its if i[0]=='B'], columns=["T","Hnojivo","Množství","J."])[["Hnojivo","Množství","J."]])
+
