@@ -68,12 +68,14 @@ def execute_query(query, params=None, fetch=False):
         st.error(f"Chyba DB: {e}")
         return None
 
+@st.cache_resource
 def check_db_structure():
     try: execute_query("ALTER TABLE hnojivo ADD COLUMN IF NOT EXISTS poradi INTEGER DEFAULT 0")
     except: pass
     # ZAJISTIT SLOUPEC PRO USERA
     try: execute_query("ALTER TABLE michani ADD COLUMN IF NOT EXISTS user_id INTEGER")
     except: pass
+    return True # Funkce v cache by měla něco vracet
 
 check_db_structure()
 
@@ -318,6 +320,7 @@ else:
                 with cb:
                     st.info("🟢 TANK B")
                     st.table(pd.DataFrame([i for i in its if i[0]=='B'], columns=["T","Hnojivo","Množství","J."])[["Hnojivo","Množství","J."]])
+
 
 
 
