@@ -129,8 +129,6 @@ if not st.session_state['logged_in']:
                 if ud:
                     # Správa zapamatování
                     if cookie_manager:
-                        # Správa zapamatování
-                    if cookie_manager:
                         if zapamatovat:
                             # Uložíme na 365 dní (přidány unikátní klíče zabraňující chybě DuplicateKey)
                             cookie_manager.set("rem_stredisko", s_name, max_age=365, key="set_s")
@@ -311,4 +309,5 @@ else:
                 with cb:
                     st.info("🟢 TANK B")
                     st.table(pd.DataFrame([i for i in its if i[0]=='B'], columns=["T","Hnojivo","Množství","J."])[["Hnojivo","Množství","J."]])
+
 
