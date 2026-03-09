@@ -137,10 +137,13 @@ if not st.session_state['logged_in']:
                             cookie_manager.set("rem_user", u, max_age=31536000, key="set_u")
                             cookie_manager.set("rem_pass", p, max_age=31536000, key="set_p")
                         else:
-                            # Smažeme pokud uživatel odškrtl (přidány unikátní klíče)
-                            cookie_manager.delete("rem_stredisko", key="del_s")
-                            cookie_manager.delete("rem_user", key="del_u")
-                            cookie_manager.delete("rem_pass", key="del_p")
+                            # Smažeme pouze pokud cookies aktuálně existují
+                            if saved_s:
+                                cookie_manager.delete("rem_stredisko", key="del_s")
+                            if saved_u:
+                                cookie_manager.delete("rem_user", key="del_u")
+                            if saved_p:
+                                cookie_manager.delete("rem_pass", key="del_p")
                         time.sleep(0.5) # Krátká pauza, aby se cookies stihly zapsat do prohlížeče
                     user_id_db = ud[0][0]
                     role_db = ud[0][1]
@@ -320,6 +323,7 @@ else:
                 with cb:
                     st.info("🟢 TANK B")
                     st.table(pd.DataFrame([i for i in its if i[0]=='B'], columns=["T","Hnojivo","Množství","J."])[["Hnojivo","Množství","J."]])
+
 
 
 
