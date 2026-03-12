@@ -3,6 +3,7 @@ import psycopg2
 import pandas as pd
 from datetime import date
 import locale
+import time  # Přidáno pro drobná zpožděni (toasty, cookies)
 
 # --- NASTAVENÍ ČEŠTINY ---
 try: locale.setlocale(locale.LC_ALL, "cs_CZ.UTF-8")
@@ -67,6 +68,7 @@ def execute_query(query, params=None, fetch=False):
         st.error(f"Chyba DB: {e}")
         return None
 
+@st.cache_resource
 def check_db_structure():
     try: execute_query("ALTER TABLE hnojivo ADD COLUMN IF NOT EXISTS poradi INTEGER DEFAULT 0")
     except: pass
@@ -85,6 +87,18 @@ def clean_number(val):
 st.title("🌱 Sklad Hnojiv (Mobil)")
 
 if 'logged_in' not in st.session_state: st.session_state['logged_in'] = False
+
+# --- INICIALIZACE COOKIES (Pro zapamatování přihlášení) ---
+try:
+    import extra_streamlit_components as stx
+    cookie_manager = stx.CookieManager()
+    saved_s = cookie_manager.get(cookie="rem_stredisko")
+    saved_u = cookie_manager.get(cookie="rem_user")
+    saved_p = cookie_manager.get(cookie="rem_pass")
+except ImportError:
+    cookie_manager = None
+    saved_s, saved_u, saved_p = None, None, None
+    st.warning("💡 Pro funkci zapamatování hesla prosím přidejte `extra-streamlit-components` do souboru requirements.txt.")
 
 # A) LOGIN
 if not st.session_state['logged_in']:
@@ -120,12 +134,83 @@ if not st.session_state['logged_in']:
                 st.rerun()
             else: st.error("Chyba: Špatné jméno nebo heslo")
 
+        # Formulář pomůže i vestavěným správcům hesel v prohlížeči
+        with st.form("login_form"):
+            s_name = st.selectbox("Středisko", list(sd.keys()), index=s_index)
+            u = st.text_input("Jméno (Login)", value=saved_u if saved_u else "")
+            p = st.text_input("Heslo", type="password", value=saved_p if saved_p else "")
+            
+            zapamatovat = st.checkbox("Zapamatovat pro příští přihlášení", value=bool(saved_u))
+            
+            submit = st.form_submit_button("Vstoupit", type="primary", use_container_width=True)
+            
+            if submit:
+                # ZMĚNA: Načítáme i cele_jmeno
+                ud = execute_query("SELECT id, role, cele_jmeno FROM users WHERE username=%s AND password=%s AND stredisko_id=%s", (u, p, sd[s_name]), fetch=True)
+                if ud:
+# Správa zapamatování
+                    if cookie_manager:
+                        if zapamatovat:
+                            # Uložíme na 365 dní (365 * 24 * 60 * 60 = 31536000 sekund)
+                            cookie_manager.set("rem_stredisko", s_name, max_age=31536000, key="set_s")
+                            cookie_manager.set("rem_user", u, max_age=31536000, key="set_u")
+                            cookie_manager.set("rem_pass", p, max_age=31536000, key="set_p")
+                        else:
+                            # Smažeme pouze pokud cookies aktuálně existují
+                            if saved_s:
+                                cookie_manager.delete("rem_stredisko", key="del_s")
+                            if saved_u:
+                                cookie_manager.delete("rem_user", key="del_u")
+                            if saved_p:
+                                cookie_manager.delete("rem_pass", key="del_p")
+                        time.sleep(0.5) # Krátká pauza, aby se cookies stihly zapsat do prohlížeče
+                    user_id_db = ud[0][0]
+                    role_db = ud[0][1]
+                    cele_jmeno_db = ud[0][2]
+                    
+                    # Pokud není celé jméno, použijeme login (u)
+                    display_name = cele_jmeno_db if cele_jmeno_db else u
+
+                    st.session_state.update({
+                        'logged_in': True, 
+                        'user_id': user_id_db,
+                        'role': role_db, 
+                        'display_name': display_name, # Uložíme si hezké jméno
+                        'stredisko_id': sd[s_name], 
+                        'stredisko_name': s_name
+                    })
+                    st.rerun()
+                else: st.error("Chyba: Špatné jméno nebo heslo")
 # B) HLAVNÍ OBSAH
 else:
     c1, c2 = st.columns([3, 1])
     # Zobrazíme hezké jméno (display_name) místo ID
     c1.info(f"📍 {st.session_state['stredisko_name']} | 👤 {st.session_state.get('display_name', '')}")
     if c2.button("Odhlásit"): st.session_state['logged_in'] = False; st.rerun()
+
+    # --- DEFINICE VYSKAKOVACÍHO OKNA ---
+    @st.dialog("⚠️ Potvrzení míchání")
+    def ukaz_potvrzeni(recept_id, recept_nazev, datum, objem_vody, user_id):
+        st.write("Opravdu chcete zapsat toto míchání do databáze?")
+        st.write(f"🧪 **Recept:** {recept_nazev}")
+        st.write(f"💧 **Voda:** {objem_vody} litrů")
+        st.write(f"📅 **Datum:** {datum.strftime('%d.%m.%Y')}")
+        
+        st.write("") # drobná mezera
+        c_ano, c_ne = st.columns(2)
+        
+        if c_ano.button("✅ ANO", type="primary", use_container_width=True):
+            execute_query(
+                "INSERT INTO michani (recept_id, datum, objem_vody_l, user_id) VALUES (%s, %s, %s, %s)", 
+                (recept_id, datum, objem_vody, user_id)
+            )
+            # Uložíme si informaci o úspěchu a zavřeme okno
+            st.session_state['mix_saved'] = True
+            st.rerun()
+            
+        if c_ne.button("❌ Storno", use_container_width=True):
+            st.rerun() # Pouze zavře okno
+    # -----------------------------------
 
     t1, t2, t3 = st.tabs(["💧 MÍCHÁNÍ", "📦 SKLAD", "🧪 RECEPTY"])
 
@@ -263,3 +348,9 @@ else:
                 with cb:
                     st.info("🟢 TANK B")
                     st.table(pd.DataFrame([i for i in its if i[0]=='B'], columns=["T","Hnojivo","Množství","J."])[["Hnojivo","Množství","J."]])
+
+
+
+
+
+
