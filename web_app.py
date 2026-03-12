@@ -77,7 +77,12 @@ def execute_query(query, params=None, fetch=False):
         return None
 
 def check_db_structure():
+    # Původní kontrola
     try: execute_query("ALTER TABLE hnojivo ADD COLUMN IF NOT EXISTS poradi INTEGER DEFAULT 0")
+    except: pass
+    
+    # NOVÉ: Kontrola sloupce user_id pro míchání
+    try: execute_query("ALTER TABLE michani ADD COLUMN IF NOT EXISTS user_id INTEGER")
     except: pass
 
 check_db_structure()
@@ -105,9 +110,17 @@ if not st.session_state['logged_in']:
         u = st.text_input("Jméno")
         p = st.text_input("Heslo", type="password")
         if st.button("Vstoupit", type="primary", use_container_width=True):
+            # Změna: Vybíráme ID i ROLE
             ud = execute_query("SELECT id, role FROM users WHERE username=%s AND password=%s AND stredisko_id=%s", (u, p, sd[s_name]), fetch=True)
             if ud:
-                st.session_state.update({'logged_in': True, 'role': ud[0][1], 'stredisko_id': sd[s_name], 'stredisko_name': s_name})
+                # Změna: Ukládáme user_id do session_state
+                st.session_state.update({
+                    'logged_in': True, 
+                    'user_id': ud[0][0],   # Uložení ID uživatele
+                    'role': ud[0][1], 
+                    'stredisko_id': sd[s_name], 
+                    'stredisko_name': s_name
+                })
                 st.rerun()
             else: st.error("Chyba")
 
@@ -128,8 +141,14 @@ else:
             sr = st.selectbox("Recept:", list(rd.keys()))
             vo = st.number_input("Voda (l):", step=100, value=1000)
             da = st.date_input("Datum:", value=date.today(), key="d_m")
+            
             if st.button("Uložit míchání", type="primary", use_container_width=True):
-                execute_query("INSERT INTO michani (recept_id, datum, objem_vody_l) VALUES (%s, %s, %s)", (rd[sr], da, vo))
+                # Změna: Přidán user_id do INSERTu
+                uid = st.session_state.get('user_id')
+                execute_query(
+                    "INSERT INTO michani (recept_id, datum, objem_vody_l, user_id) VALUES (%s, %s, %s, %s)", 
+                    (rd[sr], da, vo, uid)
+                )
                 st.toast("Uloženo!", icon="✅")
         else: st.warning("Žádné recepty")
 
