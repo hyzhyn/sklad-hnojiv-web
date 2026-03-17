@@ -84,7 +84,7 @@ def clean_number(val):
     except: return str(val)
 
 # --- 4. APLIKACE ---
-st.title("🌱 Sklad Hnojiv (Mobil)")
+st.title("🌱 Sklad Hnojiv")
 
 if 'logged_in' not in st.session_state: st.session_state['logged_in'] = False
 
