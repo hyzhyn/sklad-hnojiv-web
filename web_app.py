@@ -108,31 +108,60 @@ if not st.session_state['logged_in']:
         sd = {r[1]: r[0] for r in d} if d else {}
     except: sd = {}
     
+    # 1. OPRAVA NameError: Definujeme s_index s předstihem
+    s_index = 0 
+    
     if sd:
-        s_name = st.selectbox("Středisko", list(sd.keys()))
-        u = st.text_input("Jméno (Login)") # Upraven popisek
-        p = st.text_input("Heslo", type="password")
-        if st.button("Vstoupit", type="primary", use_container_width=True):
-            # ZMĚNA: Načítáme i cele_jmeno
-            ud = execute_query("SELECT id, role, cele_jmeno FROM users WHERE username=%s AND password=%s AND stredisko_id=%s", (u, p, sd[s_name]), fetch=True)
-            if ud:
-                user_id_db = ud[0][0]
-                role_db = ud[0][1]
-                cele_jmeno_db = ud[0][2]
-                
-                # Pokud není celé jméno, použijeme login (u)
-                display_name = cele_jmeno_db if cele_jmeno_db else u
+        if saved_s in sd:
+            s_index = list(sd.keys()).index(saved_s)
 
-                st.session_state.update({
-                    'logged_in': True, 
-                    'user_id': user_id_db,
-                    'role': role_db, 
-                    'display_name': display_name, # Uložíme si hezké jméno
-                    'stredisko_id': sd[s_name], 
-                    'stredisko_name': s_name
-                })
-                st.rerun()
-            else: st.error("Chyba: Špatné jméno nebo heslo")
+        # Formulář pomůže i vestavěným správcům hesel v prohlížeči
+        with st.form("login_form"):
+            s_name = st.selectbox("Středisko", list(sd.keys()), index=s_index)
+            u = st.text_input("Jméno (Login)", value=saved_u if saved_u else "")
+            p = st.text_input("Heslo", type="password", value=saved_p if saved_p else "")
+            
+            # 2. OPRAVA ZMIZELÉHO TLAČÍTKA: Vracíme checkbox pro zapamatování
+            zapamatovat = st.checkbox("Zapamatovat pro příští přihlášení", value=bool(saved_u))
+            
+            submit = st.form_submit_button("Vstoupit", type="primary", use_container_width=True)
+            
+            if submit:
+                # Zatím bez hashování, ať to hlavně rozběhneme
+                ud = execute_query("SELECT id, role, cele_jmeno FROM users WHERE username=%s AND password=%s AND stredisko_id=%s", (u, p, sd[s_name]), fetch=True)
+                if ud:
+                    # Správa zapamatování
+                    if cookie_manager:
+                        if zapamatovat:
+                            cookie_manager.set("rem_stredisko", s_name, max_age=31536000, key="set_s")
+                            cookie_manager.set("rem_user", u, max_age=31536000, key="set_u")
+                            cookie_manager.set("rem_pass", p, max_age=31536000, key="set_p")
+                        else:
+                            # 3. OPRAVA PÁDU (KeyError): Smažeme cookies pouze tehdy, když reálně existují
+                            if saved_s: cookie_manager.delete("rem_stredisko", key="del_s")
+                            if saved_u: cookie_manager.delete("rem_user", key="del_u")
+                            if saved_p: cookie_manager.delete("rem_pass", key="del_p")
+                            
+                        time.sleep(0.5) # Krátká pauza, aby se cookies stihly zapsat do prohlížeče
+                        
+                    user_id_db = ud[0][0]
+                    role_db = ud[0][1]
+                    cele_jmeno_db = ud[0][2]
+                    
+                    # Pokud není celé jméno, použijeme login (u)
+                    display_name = cele_jmeno_db if cele_jmeno_db else u
+
+                    st.session_state.update({
+                        'logged_in': True, 
+                        'user_id': user_id_db,
+                        'role': role_db, 
+                        'display_name': display_name,
+                        'stredisko_id': sd[s_name], 
+                        'stredisko_name': s_name
+                    })
+                    st.rerun()
+                else: 
+                    st.error("Chyba: Špatné jméno nebo heslo")
 
         # Formulář pomůže i vestavěným správcům hesel v prohlížeči
         with st.form("login_form"):
