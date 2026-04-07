@@ -328,36 +328,34 @@ def prepocet_tabulka_html(items: list, tank_label: str, tank_key: str, objemy: l
     )
 
 # ═══════════════════════════════════════════════════════════════
-# 8. ZAPAMATOVÁNÍ STŘEDISKA
-# Používáme st.query_params — funguje spolehlivě na všech
-# platformách (mobil, počítač, Streamlit Cloud) bez extra knihoven.
-# Středisko se uloží do URL query parametru, prohlížeč si ho
-# zapamatuje v historii. Heslo nechává prohlížeč zapamatovat
-# nativně přes autocomplete="current-password" v HTML formuláři.
+# 8. ZAPAMATOVANI PRIHLASENI
+# st.query_params preziva reruns pokud je nastavime PRED st.rerun().
+# Stredisko a jmeno -> ?s=Stredisko&u=Jmeno v URL.
+# Heslo si pamatuje prohlizec nativne pres autocomplete.
 # ═══════════════════════════════════════════════════════════════
-def get_saved_stredisko() -> str | None:
-    """Načte uložené středisko z query params."""
-    try:
-        return st.query_params.get("s", None)
-    except:
-        return None
+import streamlit.components.v1 as components
 
-def save_stredisko(nazev: str):
-    """Uloží středisko do query params."""
+def get_saved():
     try:
-        st.query_params["s"] = nazev
+        return {
+            'stredisko': st.query_params.get('s', ''),
+            'uzivatel':  st.query_params.get('u', ''),
+        }
     except:
-        pass
+        return {'stredisko': '', 'uzivatel': ''}
 
-def clear_stredisko():
-    """Smaže středisko z query params."""
+def save_login(stredisko, uzivatel):
     try:
-        if "s" in st.query_params:
-            del st.query_params["s"]
+        st.query_params['s'] = stredisko
+        st.query_params['u'] = uzivatel
     except:
         pass
 
-saved_s = get_saved_stredisko()
+def clear_login():
+    try:
+        st.query_params.clear()
+    except:
+        pass
 
 # ═══════════════════════════════════════════════════════════════
 # 9. SESSION STATE
@@ -375,6 +373,10 @@ for k, v in {
 # ═══════════════════════════════════════════════════════════════
 if not st.session_state['logged_in']:
 
+    saved = get_saved()
+    saved_s = saved['stredisko']
+    saved_u = saved['uzivatel']
+
     _, col, _ = st.columns([1, 2, 1])
     with col:
         st.markdown("## 🌱 Sklad Hnojiv")
@@ -385,49 +387,32 @@ if not st.session_state['logged_in']:
         sd = {r[1]: r[0] for r in strediska} if strediska else {}
 
         if not sd:
-            st.error("⚠ Nelze načíst střediska — zkontrolujte připojení k databázi.")
+            st.error("⚠ Nelze načíst střediska.")
             st.stop()
 
-        # Předvyplnění střediska z query params
         s_index = 0
         if saved_s and saved_s in sd:
             s_index = list(sd.keys()).index(saved_s)
 
-        # Injectujeme autocomplete atributy přes HTML tak, aby si
-        # prohlížeč (včetně mobilního) mohl zapamatovat heslo.
-        # Streamlit nativně nastavuje autocomplete="off", proto
-        # použijeme JS patch — přidá správné autocomplete hodnoty
-        # po renderování formuláře.
-        st.markdown("""
-        <script>
-        function patchAutocomplete() {
-            const inputs = window.parent.document.querySelectorAll('input');
-            inputs.forEach(inp => {
-                if (inp.type === 'password') {
-                    inp.setAttribute('autocomplete', 'current-password');
-                    inp.setAttribute('name', 'password');
-                }
-                if (inp.placeholder && inp.placeholder.includes('jméno') ||
-                    inp.placeholder && inp.placeholder.includes('jmeno')) {
-                    inp.setAttribute('autocomplete', 'username');
-                    inp.setAttribute('name', 'username');
-                }
-            });
-        }
-        // Spustíme po vykreslení a znovu po chvíli (Streamlit re-renders)
-        setTimeout(patchAutocomplete, 300);
-        setTimeout(patchAutocomplete, 800);
-        </script>
-        """, unsafe_allow_html=True)
+        # Ghost formulář pro autocomplete hesel v prohlížeči
+        components.html(
+            '<form style="display:none" autocomplete="on">'
+            '<input type="text" name="username" autocomplete="username">'
+            '<input type="password" name="password" autocomplete="current-password">'
+            '</form>',
+            height=0
+        )
 
         with st.form("login_form", clear_on_submit=False):
             s_name = st.selectbox("Středisko", list(sd.keys()), index=s_index)
-            u = st.text_input("Přihlašovací jméno", placeholder="Zadejte jméno")
-            p = st.text_input("Heslo", type="password", placeholder="Zadejte heslo")
+            u = st.text_input("Přihlašovací jméno", value=saved_u,
+                              autocomplete="username")
+            p = st.text_input("Heslo", type="password",
+                              autocomplete="current-password")
             zapamatovat = st.checkbox(
-                "Zapamatovat středisko",
-                value=(saved_s is not None),
-                help="Středisko se uloží v adrese prohlížeče. Heslo si zapamatuje prohlížeč sám."
+                "Zapamatovat jméno a středisko",
+                value=bool(saved_s or saved_u),
+                help="Uloží středisko a jméno. Heslo si zapamatuje správce hesel v prohlížeči."
             )
             submit = st.form_submit_button(
                 "Přihlásit se", type="primary", use_container_width=True
@@ -451,16 +436,16 @@ if not st.session_state['logged_in']:
                                     "UPDATE users SET password=%s WHERE id=%s",
                                     (hash_password(p), uid)
                                 )
+                            # KLICOVE: query_params PRED session_state a rerun
+                            if zapamatovat:
+                                save_login(s_name, u.strip())
+                            else:
+                                clear_login()
                             st.session_state.update({
                                 'logged_in': True, 'user_id': uid, 'role': role,
                                 'display_name': cele_jmeno if cele_jmeno else u.strip(),
                                 'stredisko_id': sd[s_name], 'stredisko_name': s_name,
                             })
-                            # Zapamatování střediska přes query_params
-                            if zapamatovat:
-                                save_stredisko(s_name)
-                            else:
-                                clear_stredisko()
                             st.rerun()
                         else:
                             st.error("❌ Špatné heslo.")
