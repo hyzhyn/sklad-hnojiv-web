@@ -328,14 +328,17 @@ def prepocet_tabulka_html(items: list, tank_label: str, tank_key: str, objemy: l
     )
 
 # ═══════════════════════════════════════════════════════════════
-# 8. ZAPAMATOVANI + SESSION STATE
+# 8. SESSION STATE + LOGIN
 # ═══════════════════════════════════════════════════════════════
-import streamlit.components.v1 as components
+# Ukládáme jméno a středisko do session_state['mem_s'] a ['mem_u'].
+# Přežívají dokud uživatel nezavře záložku / neodhlásí se.
+# Prohlížeč nabídne zapamatování hesla sám — vidí <input type="password">.
 
 for k, v in {
     'logged_in': False, 'user_id': None, 'role': None,
     'display_name': None, 'stredisko_id': None, 'stredisko_name': None,
-    'mix_saved': False, 'login_error': '',
+    'mix_saved': False,
+    'mem_s': '', 'mem_u': '',
 }.items():
     if k not in st.session_state:
         st.session_state[k] = v
@@ -345,138 +348,81 @@ for k, v in {
 # ═══════════════════════════════════════════════════════════════
 if not st.session_state['logged_in']:
 
-    strediska = execute_query("SELECT id, nazev FROM stredisko ORDER BY nazev", fetch=True)
-    sd = {r[1]: r[0] for r in strediska} if strediska else {}
-    if not sd:
-        st.error("\u26a0 Nelze načíst střediska.")
-        st.stop()
-    strediska_list = list(sd.keys())
-
-    # Zapamatované hodnoty z minulého přihlášení
-    qp = st.query_params
-    saved_s = qp.get('s', '')
-    saved_u = qp.get('u', '')
-
-    # Data přicházejí z HTML formuláře přes URL query parametry
-    form_action = qp.get('_action', '')
-    form_s      = qp.get('_s', '')
-    form_u      = qp.get('_u', '')
-    form_p      = qp.get('_p', '')
-    form_rem    = qp.get('_rem', '0')
-
-    if form_action == 'login' and form_u and form_p:
-        s_name = form_s if form_s in sd else strediska_list[0]
-        ud = execute_query(
-            "SELECT id, role, cele_jmeno, password FROM users "
-            "WHERE username=%s AND stredisko_id=%s",
-            (form_u.strip(), sd[s_name]), fetch=True
-        )
-        if ud:
-            uid, role, cele_jmeno, stored_pw = ud[0]
-            ok, needs_upgrade = verify_password(form_p, stored_pw)
-            if ok:
-                if needs_upgrade:
-                    execute_query("UPDATE users SET password=%s WHERE id=%s",
-                                  (hash_password(form_p), uid))
-                st.session_state.update({
-                    'logged_in': True, 'user_id': uid, 'role': role,
-                    'display_name': cele_jmeno if cele_jmeno else form_u.strip(),
-                    'stredisko_id': sd[s_name], 'stredisko_name': s_name,
-                    'login_error': '',
-                })
-                st.query_params.clear()
-                if form_rem == '1':
-                    st.query_params['s'] = s_name
-                    st.query_params['u'] = form_u.strip()
-                st.rerun()
-            else:
-                st.session_state['login_error'] = 'Špatné heslo.'
-                st.query_params.clear()
-                st.rerun()
-        else:
-            st.session_state['login_error'] = 'Uživatel nenalezen nebo špatné středisko.'
-            st.query_params.clear()
-            st.rerun()
-
-    # Zobrazení login stránky
     _, col, _ = st.columns([1, 2, 1])
     with col:
-        st.markdown("## \U0001f331 Sklad Hnojiv")
+        st.markdown("## 🌱 Sklad Hnojiv")
         st.markdown("##### Přihlášení")
         st.markdown("---")
 
-        if st.session_state.get('login_error'):
-            st.error("\u274c " + st.session_state['login_error'])
-            st.session_state['login_error'] = ''
-
-        # Sestavíme options pro selectbox
-        options_html = ""
-        for nazev in strediska_list:
-            sel = 'selected' if nazev == saved_s else ''
-            safe = nazev.replace('"', '&quot;')
-            options_html += f'<option value="{safe}" {sel}>{safe}</option>'
-
-        zap_checked = 'checked' if (saved_s or saved_u) else ''
-        safe_saved_u = saved_u.replace('"', '&quot;')
-
-        # Sestavíme formulář jako Python string (bez f-string kvůli CSS {})
-        css = """
-          *{box-sizing:border-box;margin:0;padding:0}
-          body{font-family:'Segoe UI',sans-serif;background:transparent;padding:4px}
-          label{display:block;font-size:13px;color:#94a3b8;margin-bottom:4px;margin-top:12px}
-          select,input[type=text],input[type=password]{
-            width:100%;padding:9px 12px;
-            background:#1e2533;color:#e2e8f0;
-            border:1px solid #2d3748;border-radius:7px;
-            font-size:15px;outline:none;-webkit-appearance:none}
-          select{cursor:pointer}
-          select:focus,input:focus{border-color:#00c896}
-          .remember{display:flex;align-items:center;gap:8px;
-            margin-top:14px;font-size:13px;color:#94a3b8;cursor:pointer}
-          .remember input{width:auto;margin:0;cursor:pointer}
-          button{width:100%;margin-top:18px;padding:11px;
-            background:#00c896;color:#000;
-            border:none;border-radius:8px;
-            font-size:15px;font-weight:700;cursor:pointer;
-            transition:background 0.15s}
-          button:hover{background:#009e78}
-          button:active{background:#007a5e}
-        """
-
-        form_html = (
-            '<!DOCTYPE html><html><head>'
-            '<meta charset="utf-8">'
-            '<meta name="viewport" content="width=device-width,initial-scale=1">'
-            '<style>' + css + '</style>'
-            '</head><body>'
-            '<form id="lf" method="GET" autocomplete="on">'
-            '<input type="hidden" name="_action" value="login">'
-            '<label>St\u0159edisko</label>'
-            '<select name="_s" autocomplete="organization">'
-            + options_html +
-            '</select>'
-            '<label>P\u0159ihla\u0161ovac\u00ed jm\u00e9no</label>'
-            '<input type="text" name="_u" value="' + safe_saved_u + '" '
-            'autocomplete="username" placeholder="Zadejte jm\u00e9no">'
-            '<label>Heslo</label>'
-            '<input type="password" name="_p" '
-            'autocomplete="current-password" placeholder="Zadejte heslo">'
-            '<label class="remember">'
-            '<input type="checkbox" id="chk" name="_rem" value="1" ' + zap_checked + '>'
-            'Zapamatovat jm\u00e9no a st\u0159edisko'
-            '</label>'
-            '<button type="submit">P\u0159ihl\u00e1sit se</button>'
-            '</form>'
-            '<script>'
-            'document.getElementById("lf").addEventListener("submit",function(){'
-            'var c=document.getElementById("chk");'
-            'if(!c.checked){c.removeAttribute("name");}'
-            '});'
-            '</script>'
-            '</body></html>'
+        strediska = execute_query(
+            "SELECT id, nazev FROM stredisko ORDER BY nazev", fetch=True
         )
+        sd = {r[1]: r[0] for r in strediska} if strediska else {}
+        if not sd:
+            st.error("⚠ Nelze načíst střediska.")
+            st.stop()
 
-        components.html(form_html, height=390, scrolling=False)
+        names = list(sd.keys())
+
+        # Index naposledy zvoleného střediska
+        saved_s = st.session_state['mem_s']
+        saved_u = st.session_state['mem_u']
+        s_index = names.index(saved_s) if saved_s in names else 0
+
+        with st.form("login_form"):
+            s_name = st.selectbox("Středisko", names, index=s_index)
+            u = st.text_input(
+                "Přihlašovací jméno",
+                value=saved_u
+            )
+            p = st.text_input("Heslo", type="password")
+            zapamatovat = st.checkbox(
+                "Zapamatovat jméno a středisko",
+                value=bool(saved_s or saved_u),
+            )
+            submit = st.form_submit_button(
+                "Přihlásit se",
+                type="primary",
+                use_container_width=True
+            )
+
+        if submit:
+            if not u or not p:
+                st.error("Zadejte jméno i heslo.")
+            else:
+                ud = execute_query(
+                    "SELECT id, role, cele_jmeno, password FROM users "
+                    "WHERE username=%s AND stredisko_id=%s",
+                    (u.strip(), sd[s_name]), fetch=True
+                )
+                if ud:
+                    uid, role, cele_jmeno, stored_pw = ud[0]
+                    ok, needs_upgrade = verify_password(p, stored_pw)
+                    if ok:
+                        if needs_upgrade:
+                            execute_query(
+                                "UPDATE users SET password=%s WHERE id=%s",
+                                (hash_password(p), uid)
+                            )
+                        if zapamatovat:
+                            st.session_state['mem_s'] = s_name
+                            st.session_state['mem_u'] = u.strip()
+                        else:
+                            st.session_state['mem_s'] = ''
+                            st.session_state['mem_u'] = ''
+                        st.session_state.update({
+                            'logged_in': True,
+                            'user_id': uid,
+                            'role': role,
+                            'display_name': cele_jmeno if cele_jmeno else u.strip(),
+                            'stredisko_id': sd[s_name],
+                            'stredisko_name': s_name,
+                        })
+                        st.rerun()
+                    else:
+                        st.error("❌ Špatné heslo.")
+                else:
+                    st.error("❌ Uživatel nenalezen nebo špatné středisko.")
 
 # ═══════════════════════════════════════════════════════════════
 # B) HLAVNÍ OBSAH
