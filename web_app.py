@@ -328,20 +328,58 @@ def prepocet_tabulka_html(items: list, tank_label: str, tank_key: str, objemy: l
     )
 
 # ═══════════════════════════════════════════════════════════════
-# 8. SESSION STATE + LOGIN
+# 8. SESSION STATE + ZAPAMATOVÁNÍ (cookies)
 # ═══════════════════════════════════════════════════════════════
-# Ukládáme jméno a středisko do session_state['mem_s'] a ['mem_u'].
-# Přežívají dokud uživatel nezavře záložku / neodhlásí se.
-# Prohlížeč nabídne zapamatování hesla sám — vidí <input type="password">.
-
+# Inicializace session state
 for k, v in {
     'logged_in': False, 'user_id': None, 'role': None,
     'display_name': None, 'stredisko_id': None, 'stredisko_name': None,
     'mix_saved': False,
-    'mem_s': '', 'mem_u': '',
 }.items():
     if k not in st.session_state:
         st.session_state[k] = v
+
+# CookieManager — MUSÍ být inicializován vždy na začátku,
+# ne uvnitř if bloků. Streamlit jinak nenačte jeho JS.
+try:
+    from streamlit_cookies_manager import EncryptedCookieManager
+    cookies = EncryptedCookieManager(
+        prefix="sklad_",
+        password=st.secrets.get("cookie_password", "sklad-hnojiv-default-key-2024")
+    )
+    if not cookies.ready():
+        st.stop()
+    COOKIES_OK = True
+except Exception:
+    cookies = None
+    COOKIES_OK = False
+
+def get_cookie(name, default=''):
+    if not COOKIES_OK or cookies is None:
+        return default
+    try:
+        return cookies.get(name) or default
+    except Exception:
+        return default
+
+def set_cookie(name, value):
+    if not COOKIES_OK or cookies is None:
+        return
+    try:
+        cookies[name] = value
+        cookies.save()
+    except Exception:
+        pass
+
+def del_cookie(name):
+    if not COOKIES_OK or cookies is None:
+        return
+    try:
+        if name in cookies:
+            del cookies[name]
+            cookies.save()
+    except Exception:
+        pass
 
 # ═══════════════════════════════════════════════════════════════
 # A) LOGIN
@@ -363,10 +401,8 @@ if not st.session_state['logged_in']:
             st.stop()
 
         names = list(sd.keys())
-
-        # Index naposledy zvoleného střediska
-        saved_s = st.session_state['mem_s']
-        saved_u = st.session_state['mem_u']
+        saved_s = get_cookie('s')
+        saved_u = get_cookie('u')
         s_index = names.index(saved_s) if saved_s in names else 0
 
         with st.form("login_form"):
@@ -405,11 +441,11 @@ if not st.session_state['logged_in']:
                                 (hash_password(p), uid)
                             )
                         if zapamatovat:
-                            st.session_state['mem_s'] = s_name
-                            st.session_state['mem_u'] = u.strip()
+                            set_cookie('s', s_name)
+                            set_cookie('u', u.strip())
                         else:
-                            st.session_state['mem_s'] = ''
-                            st.session_state['mem_u'] = ''
+                            del_cookie('s')
+                            del_cookie('u')
                         st.session_state.update({
                             'logged_in': True,
                             'user_id': uid,
