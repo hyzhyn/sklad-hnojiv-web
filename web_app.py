@@ -328,16 +328,36 @@ def prepocet_tabulka_html(items: list, tank_label: str, tank_key: str, objemy: l
     )
 
 # ═══════════════════════════════════════════════════════════════
-# 8. COOKIES
+# 8. ZAPAMATOVÁNÍ STŘEDISKA
+# Používáme st.query_params — funguje spolehlivě na všech
+# platformách (mobil, počítač, Streamlit Cloud) bez extra knihoven.
+# Středisko se uloží do URL query parametru, prohlížeč si ho
+# zapamatuje v historii. Heslo nechává prohlížeč zapamatovat
+# nativně přes autocomplete="current-password" v HTML formuláři.
 # ═══════════════════════════════════════════════════════════════
-try:
-    import extra_streamlit_components as stx
-    cookie_manager = stx.CookieManager()
-    saved_s = cookie_manager.get(cookie="rem_stredisko")
-    saved_u = cookie_manager.get(cookie="rem_user")
-except ImportError:
-    cookie_manager = None
-    saved_s, saved_u = None, None
+def get_saved_stredisko() -> str | None:
+    """Načte uložené středisko z query params."""
+    try:
+        return st.query_params.get("s", None)
+    except:
+        return None
+
+def save_stredisko(nazev: str):
+    """Uloží středisko do query params."""
+    try:
+        st.query_params["s"] = nazev
+    except:
+        pass
+
+def clear_stredisko():
+    """Smaže středisko z query params."""
+    try:
+        if "s" in st.query_params:
+            del st.query_params["s"]
+    except:
+        pass
+
+saved_s = get_saved_stredisko()
 
 # ═══════════════════════════════════════════════════════════════
 # 9. SESSION STATE
@@ -368,18 +388,46 @@ if not st.session_state['logged_in']:
             st.error("⚠ Nelze načíst střediska — zkontrolujte připojení k databázi.")
             st.stop()
 
+        # Předvyplnění střediska z query params
         s_index = 0
         if saved_s and saved_s in sd:
             s_index = list(sd.keys()).index(saved_s)
 
-        with st.form("login_form"):
+        # Injectujeme autocomplete atributy přes HTML tak, aby si
+        # prohlížeč (včetně mobilního) mohl zapamatovat heslo.
+        # Streamlit nativně nastavuje autocomplete="off", proto
+        # použijeme JS patch — přidá správné autocomplete hodnoty
+        # po renderování formuláře.
+        st.markdown("""
+        <script>
+        function patchAutocomplete() {
+            const inputs = window.parent.document.querySelectorAll('input');
+            inputs.forEach(inp => {
+                if (inp.type === 'password') {
+                    inp.setAttribute('autocomplete', 'current-password');
+                    inp.setAttribute('name', 'password');
+                }
+                if (inp.placeholder && inp.placeholder.includes('jméno') ||
+                    inp.placeholder && inp.placeholder.includes('jmeno')) {
+                    inp.setAttribute('autocomplete', 'username');
+                    inp.setAttribute('name', 'username');
+                }
+            });
+        }
+        // Spustíme po vykreslení a znovu po chvíli (Streamlit re-renders)
+        setTimeout(patchAutocomplete, 300);
+        setTimeout(patchAutocomplete, 800);
+        </script>
+        """, unsafe_allow_html=True)
+
+        with st.form("login_form", clear_on_submit=False):
             s_name = st.selectbox("Středisko", list(sd.keys()), index=s_index)
-            u = st.text_input("Přihlašovací jméno", value=saved_u or "")
-            p = st.text_input("Heslo", type="password")
+            u = st.text_input("Přihlašovací jméno", placeholder="Zadejte jméno")
+            p = st.text_input("Heslo", type="password", placeholder="Zadejte heslo")
             zapamatovat = st.checkbox(
-                "Zapamatovat přihlašovací jméno",
-                value=bool(saved_u),
-                help="Heslo se z bezpečnostních důvodů neukládá"
+                "Zapamatovat středisko",
+                value=(saved_s is not None),
+                help="Středisko se uloží v adrese prohlížeče. Heslo si zapamatuje prohlížeč sám."
             )
             submit = st.form_submit_button(
                 "Přihlásit se", type="primary", use_container_width=True
@@ -392,7 +440,7 @@ if not st.session_state['logged_in']:
                     ud = execute_query(
                         "SELECT id, role, cele_jmeno, password FROM users "
                         "WHERE username=%s AND stredisko_id=%s",
-                        (u, sd[s_name]), fetch=True
+                        (u.strip(), sd[s_name]), fetch=True
                     )
                     if ud:
                         uid, role, cele_jmeno, stored_pw = ud[0]
@@ -405,16 +453,14 @@ if not st.session_state['logged_in']:
                                 )
                             st.session_state.update({
                                 'logged_in': True, 'user_id': uid, 'role': role,
-                                'display_name': cele_jmeno if cele_jmeno else u,
+                                'display_name': cele_jmeno if cele_jmeno else u.strip(),
                                 'stredisko_id': sd[s_name], 'stredisko_name': s_name,
                             })
-                            if cookie_manager:
-                                if zapamatovat:
-                                    cookie_manager.set("rem_stredisko", s_name, max_age=31536000, key="set_s")
-                                    cookie_manager.set("rem_user", u, max_age=31536000, key="set_u")
-                                else:
-                                    if saved_s: cookie_manager.delete("rem_stredisko", key="del_s")
-                                    if saved_u: cookie_manager.delete("rem_user", key="del_u")
+                            # Zapamatování střediska přes query_params
+                            if zapamatovat:
+                                save_stredisko(s_name)
+                            else:
+                                clear_stredisko()
                             st.rerun()
                         else:
                             st.error("❌ Špatné heslo.")
@@ -471,8 +517,18 @@ else:
         st.toast("✅ Míchání bylo uloženo!", icon="💧")
         st.session_state['mix_saved'] = False
 
-    # ── TABY ───────────────────────────────────────────────────
-    t1, t2, t3, t4 = st.tabs(["💧 Míchání", "📦 Sklad", "🧪 Recepty", "📊 Bilance"])
+    # ── TABY — Bilance jen pro admina ──────────────────────────
+    is_admin = st.session_state.get('role') == 'admin'
+
+    tab_labels = ["💧 Míchání", "📦 Sklad", "🧪 Recepty"]
+    if is_admin:
+        tab_labels.append("📊 Bilance")
+
+    tabs = st.tabs(tab_labels)
+    t1 = tabs[0]
+    t2 = tabs[1]
+    t3 = tabs[2]
+    t4 = tabs[3] if is_admin else None
 
     # ── TAB 1: MÍCHÁNÍ ─────────────────────────────────────────
     with t1:
@@ -678,33 +734,34 @@ else:
             else:
                 st.info("Recept nemá žádné položky.")
 
-    # ── TAB 4: BILANCE ─────────────────────────────────────────
-    with t4:
-        st.subheader("Měsíční bilance")
+    # ── TAB 4: BILANCE — pouze admin ───────────────────────────
+    if is_admin and t4 is not None:
+        with t4:
+            st.subheader("Měsíční bilance")
 
-        bcol1, bcol2 = st.columns(2)
-        mesic = bcol1.selectbox(
-            "Měsíc:", list(range(1, 13)),
-            index=date.today().month - 1,
-            format_func=lambda m: date(2000, m, 1).strftime("%B")
-        )
-        rok = bcol2.selectbox(
-            "Rok:", list(range(2024, 2036)),
-            index=max(0, date.today().year - 2024)
-        )
+            bcol1, bcol2 = st.columns(2)
+            mesic = bcol1.selectbox(
+                "Měsíc:", list(range(1, 13)),
+                index=date.today().month - 1,
+                format_func=lambda m: date(2000, m, 1).strftime("%B")
+            )
+            rok = bcol2.selectbox(
+                "Rok:", list(range(2024, 2036)),
+                index=max(0, date.today().year - 2024)
+            )
 
-        if st.button("📊 Vypočítat bilanci", type="primary", use_container_width=True):
-            start_date = date(rok, mesic, 1)
-            end_date = date(rok + 1, 1, 1) if mesic == 12 else date(rok, mesic + 1, 1)
+            if st.button("📊 Vypočítat bilanci", type="primary", use_container_width=True):
+                start_date = date(rok, mesic, 1)
+                end_date = date(rok + 1, 1, 1) if mesic == 12 else date(rok, mesic + 1, 1)
 
-            with st.spinner("Počítám bilanci…"):
-                rows = vypocti_bilanci(sid, start_date, end_date)
+                with st.spinner("Počítám bilanci…"):
+                    rows = vypocti_bilanci(sid, start_date, end_date)
 
-            if rows:
-                st.markdown(
-                    f"**{date(2000, mesic, 1).strftime('%B')} {rok}** "
-                    f"· {len(rows)} hnojiv"
-                )
-                st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
-            else:
-                st.info("Pro vybrané období nejsou žádná data.")
+                if rows:
+                    st.markdown(
+                        f"**{date(2000, mesic, 1).strftime('%B')} {rok}** "
+                        f"· {len(rows)} hnojiv"
+                    )
+                    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+                else:
+                    st.info("Pro vybrané období nejsou žádná data.")
