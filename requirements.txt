@@ -1,4 +1,5 @@
-streamlit
+streamlit>=1.28.0
 psycopg2-binary
 pandas
-extra-streamlit-components
+streamlit-cookies-manager
+openpyxl
