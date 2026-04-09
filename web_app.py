@@ -118,9 +118,7 @@ def verify_password(plain: str, stored: str):
 
 # ═══════════════════════════════════════════════════════════════
 # 4. DB — CONNECTION POOL
-# Klíčová oprava výkonu č. 1:
-# Dříve: psycopg2.connect() = nové TCP spojení při každém dotazu (~100–300 ms)
-# Nyní:  ThreadedConnectionPool = sdílené spojení, zapůjčujeme na dobu dotazu
+# oprava výkonu č. 1
 # ═══════════════════════════════════════════════════════════════
 @st.cache_resource
 def get_pool():
@@ -153,10 +151,7 @@ def execute_query(query, params=None, fetch=False):
 
 # ═══════════════════════════════════════════════════════════════
 # 5. INICIALIZACE DB 
-# Klíčová oprava výkonu č. 2:
-# Dříve: check_db_structure() bez cache = 6× ALTER TABLE při KAŽDÉM rerunu
-#        (každý klik spouštěl ALTER TABLE = stovky zbytečných DB dotazů)
-# Nyní:  @st.cache_resource = spustí se jednou, výsledek se kešuje
+# oprava výkonu č. 2
 # ═══════════════════════════════════════════════════════════════
 @st.cache_resource
 def init_db_once():
@@ -476,7 +471,7 @@ else:
 
     st.markdown("---")
 
-    # Recepty načteme jednou — sdílené mezi taby
+    # Recepty načítá jednou — sdílené mezi taby
     recs_raw = execute_query(
         "SELECT id, nazev FROM recept WHERE stredisko_id=%s ORDER BY nazev",
         (sid,), fetch=True
