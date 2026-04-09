@@ -6,7 +6,6 @@ from datetime import date
 import locale
 import hashlib
 
-# --- NASTAVENÍ ČEŠTINY ---
 try:
     locale.setlocale(locale.LC_ALL, "cs_CZ.UTF-8")
 except:
@@ -15,10 +14,8 @@ except:
     except:
         pass
 
-# --- 1. KONFIGURACE STRÁNKY ---
 st.set_page_config(page_title="Sklad Hnojiv", page_icon="🌱", layout="centered")
 
-# --- 2. CSS ---
 st.markdown("""
 <style>
     .stApp { background-color: #0f1117; color: #e2e8f0; }
@@ -106,7 +103,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ═══════════════════════════════════════════════════════════════
-# 3. HASHOVÁNÍ HESEL — stejná implementace jako desktop app
+# 3. HASHOVÁNÍ HESEL
 # ═══════════════════════════════════════════════════════════════
 def hash_password(password: str) -> str:
     return hashlib.sha256(password.encode('utf-8')).hexdigest()
@@ -155,7 +152,7 @@ def execute_query(query, params=None, fetch=False):
         pool.putconn(conn)   # Vždy vrátit zpět do poolu
 
 # ═══════════════════════════════════════════════════════════════
-# 5. INICIALIZACE DB — jednou za životnost serveru
+# 5. INICIALIZACE DB 
 # Klíčová oprava výkonu č. 2:
 # Dříve: check_db_structure() bez cache = 6× ALTER TABLE při KAŽDÉM rerunu
 #        (každý klik spouštěl ALTER TABLE = stovky zbytečných DB dotazů)
@@ -328,7 +325,7 @@ def prepocet_tabulka_html(items: list, tank_label: str, tank_key: str, objemy: l
     )
 
 # ═══════════════════════════════════════════════════════════════
-# 8. SESSION STATE + ZAPAMATOVÁNÍ (cookies)
+# 8. cookies
 # ═══════════════════════════════════════════════════════════════
 # Inicializace session state
 for k, v in {
