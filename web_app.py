@@ -739,35 +739,6 @@ else:
                         st.toast("\u2705 P\u0159\u00edjem ulo\u017een!", icon="\U0001f69a")
                         st.rerun()
 
-                    if st.button("❌ Zrušit", use_container_width=True, key="kolize_cancel"):
-                        st.rerun()
-
-                # Toast po uložení z dialogu
-                if st.session_state.get('mix_saved_msg'):
-                    st.toast(st.session_state.pop('mix_saved_msg'), icon="🚚")
-
-                if st.button("🚚 Uložit příjem", type="primary", use_container_width=True):
-                    hid = hd_dict[sh]
-                    # Zkontrolujeme, zda ve stejný den existuje inventura pro toto hnojivo
-                    kolize = execute_query(
-                        "SELECT COUNT(*) FROM dodavky_inventura "
-                        "WHERE hnojivo_id=%s AND datum=%s AND typ='inventura'",
-                        (hid, dt), fetch=True
-                    )
-                    if kolize and kolize[0][0] > 0:
-                        # Kolize — otevřeme dialog
-                        dialog_kolize(hid, sh, mn, dt)
-                    else:
-                        # Žádná kolize — uložíme přímo
-                        execute_query(
-                            "INSERT INTO dodavky_inventura "
-                            "(hnojivo_id, datum, mnozstvi_kg_l, typ) "
-                            "VALUES (%s,%s,%s,'dodavka')",
-                            (hid, dt, mn)
-                        )
-                        st.toast("✅ Příjem uložen!", icon="🚚")
-                        st.rerun()
-
         if st.session_state.get('role') == 'admin':
             st.markdown("---")
             with st.expander("⚙️ Pořadí hnojiv (admin)"):
