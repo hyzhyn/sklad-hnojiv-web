@@ -365,7 +365,6 @@ for k, v in {
     'logged_in': False, 'user_id': None, 'role': None,
     'display_name': None, 'stredisko_id': None, 'stredisko_name': None,
     'mix_saved': False,
-    'prijem_pending': None,
 }.items():
     if k not in st.session_state:
         st.session_state[k] = v
@@ -658,110 +657,16 @@ else:
                 mn = st.number_input("Množství (+):", min_value=0.01, step=50.0)
                 dt = st.date_input("Datum:", value=date.today())
 
-                # Dialog pro řešení kolize inventura vs. dodávka ve stejný den.
-                # Pořadí závisí na ID (vyšší ID = pozdější záznam v DB).
-                # "Dodávka přišla PŘED inventurou" → dodávka dostane nižší ID
-                #   → vložíme ji PŘED inventuru (není potřeba nic extra, prostě uložíme)
-                #   → ale inventura musí být přepočítána VČETNĚ dodávky.
-                # "Dodávka přišla PO inventuře" → dodávka dostane vyšší ID
-                #   → stačí ji normálně přidat ZA inventuru (výchozí chování).
-                # Technicky: ID řídí pořadí při DISTINCT ON v bilanci.
-                # Přidáme do session_state pending_prijem a zobrazíme dialog.
-
-                # ── Dialog kolize ──────────────────────────────────
-                # INSERT se NEPROVÁDÍ uvnitř @st.dialog — Streamlit
-                # dialogy mají omezení s DB operacemi před rerun.
-                # Dialog pouze uloží záměr do session_state,
-                # INSERT proběhne níže v hlavním průchodu scriptu.
-
-                @st.dialog("\u26a0\ufe0f Kolize \u2014 dod\u00e1vka a inventura ve stejn\u00fd den")
-                def dialog_kolize(hnojivo_id, hnozivo_nazev, mnozstvi, datum):
-                    st.markdown(
-                        f"Ve **stejn\u00fd den ({format_date(datum)})** ji\u017e existuje "
-                        f"**inventura pro {hnozivo_nazev}**."
-                    )
-                    st.markdown("Kdy dod\u00e1vka dorazila?")
-                    st.markdown("---")
-                    c1, c2 = st.columns(2)
-                    with c1:
-                        st.markdown("**\U0001f4e6 P\u0159ED inventurou**")
-                        st.caption(
-                            "Zbo\u017e\u00ed dorazilo r\u00e1no, pak byl spo\u010d\u00edt\u00e1n stav. "
-                            "Inventura ji\u017e tuto dod\u00e1vku obsahuje \u2014 "
-                            "do bilance se neprop\u00eds\u016fe znovu."
-                        )
-                        if st.button("Dod\u00e1vka byla PRVN\u00cd",
-                                     type="primary",
-                                     use_container_width=True,
-                                     key="kolize_pred"):
-                            st.session_state['_kolize_akce'] = {
-                                'hnojivo_id': hnojivo_id,
-                                'datum': datum,
-                                'mnozstvi': mnozstvi,
-                                'nazev': hnozivo_nazev,
-                                'poradi': 0,
-                            }
-                            st.rerun()
-                    with c2:
-                        st.markdown("**\U0001f69a PO inventu\u0159e**")
-                        st.caption(
-                            "Nejd\u0159\u00edv se po\u010d\u00edtal stav skladu, pak dorazilo zbo\u017e\u00ed. "
-                            "Dod\u00e1vka se p\u0159i\u010dte ke stavu po inventu\u0159e."
-                        )
-                        if st.button("Inventura byla PRVN\u00cd",
-                                     use_container_width=True,
-                                     key="kolize_po"):
-                            st.session_state['_kolize_akce'] = {
-                                'hnojivo_id': hnojivo_id,
-                                'datum': datum,
-                                'mnozstvi': mnozstvi,
-                                'nazev': hnozivo_nazev,
-                                'poradi': 1,
-                            }
-                            st.rerun()
-                    if st.button("\u274c Zru\u0161it",
-                                 use_container_width=True,
-                                 key="kolize_cancel"):
-                        st.rerun()
-
-                # ── Provedení INSERTu po zavření dialogu ───────────
-                if '_kolize_akce' in st.session_state:
-                    akce = st.session_state.pop('_kolize_akce')
-                    ok = execute_query(
+                # ── Uložení příjmu ─────────────────────────────────
+                if st.button("🚚 Uložit příjem", type="primary", use_container_width=True):
+                    execute_query(
                         "INSERT INTO dodavky_inventura "
                         "(hnojivo_id, datum, mnozstvi_kg_l, typ, poradi_v_dni) "
-                        "VALUES (%s,%s,%s,'dodavka',%s)",
-                        (akce['hnojivo_id'], akce['datum'],
-                         akce['mnozstvi'], akce['poradi'])
+                        "VALUES (%s,%s,%s,'dodavka',1)",
+                        (hd_dict[sh], dt, mn)
                     )
-                    if ok:
-                        kde = 'p\u0159ed' if akce['poradi'] == 0 else 'po'
-                        st.toast(
-                            f"\u2705 Dod\u00e1vka ulo\u017eena {kde} inventurou ({akce['nazev']}).",
-                            icon="\U0001f69a"
-                        )
-                        st.rerun()
-
-                # ── Hlavní tlačítko uložení příjmu ─────────────────
-                if st.button("\U0001f69a Ulo\u017eit p\u0159\u00edjem",
-                             type="primary", use_container_width=True):
-                    hid = hd_dict[sh]
-                    kolize = execute_query(
-                        "SELECT COUNT(*) FROM dodavky_inventura "
-                        "WHERE hnojivo_id=%s AND datum=%s AND typ='inventura'",
-                        (hid, dt), fetch=True
-                    )
-                    if kolize and kolize[0][0] > 0:
-                        dialog_kolize(hid, sh, mn, dt)
-                    else:
-                        execute_query(
-                            "INSERT INTO dodavky_inventura "
-                            "(hnojivo_id, datum, mnozstvi_kg_l, typ, poradi_v_dni) "
-                            "VALUES (%s,%s,%s,'dodavka',1)",
-                            (hid, dt, mn)
-                        )
-                        st.toast("\u2705 P\u0159\u00edjem ulo\u017een!", icon="\U0001f69a")
-                        st.rerun()
+                    st.toast("✅ Příjem uložen!", icon="🚚")
+                    st.rerun()
 
         if st.session_state.get('role') == 'admin':
             st.markdown("---")
