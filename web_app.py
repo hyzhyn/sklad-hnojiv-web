@@ -173,17 +173,41 @@ def init_db_once():
             datum_od DATE, datum_do DATE, stredisko_id INTEGER
         )""",
         "ALTER TABLE recept ADD COLUMN IF NOT EXISTS datum_vytvoreni DATE DEFAULT CURRENT_DATE",
-        # Pořadí záznamu v rámci dne: 0 = před inventurou, 1 = po inventuře (default)
         "ALTER TABLE dodavky_inventura ADD COLUMN IF NOT EXISTS poradi_v_dni SMALLINT DEFAULT 1",
+        # OPRAVA CONSTRAINTU:
+        # Původní unique_hnojivo_mesic zakazoval více řádků se stejným
+        # (hnojivo_id, datum) pro VŠECHNY typy záznamu — to blokovalo
+        # přidání dodávky ve stejný den jako inventura.
+        # Řešení: smažeme starý constraint, nahradíme partial indexem
+        # který platí POUZE pro inventury (dodávky jsou neomezené).
+        "ALTER TABLE dodavky_inventura DROP CONSTRAINT IF EXISTS unique_hnojivo_mesic",
+        """CREATE UNIQUE INDEX IF NOT EXISTS unique_inventura_hnojivo_den
+           ON dodavky_inventura (hnojivo_id, datum)
+           WHERE typ = 'inventura'""",
     ]
     for sql in opravy:
         try:
             execute_query(sql)
-        except:
-            pass
+        except Exception as e:
+            # Logujeme chyby ale nepřerušujeme startup
+            print(f"DB init warning: {e}")
     return True
 
 init_db_once()
+
+# Oprava constraintu — spustí se při každém načtení aplikace.
+# Nutné protože @st.cache_resource by to při druhém startu přeskočil.
+try:
+    execute_query(
+        "ALTER TABLE dodavky_inventura DROP CONSTRAINT IF EXISTS unique_hnojivo_mesic"
+    )
+    execute_query("""
+        CREATE UNIQUE INDEX IF NOT EXISTS unique_inventura_hnojivo_den
+        ON dodavky_inventura (hnojivo_id, datum)
+        WHERE typ = 'inventura'
+    """)
+except Exception as e:
+    print(f"Constraint fix: {e}")
 
 # ═══════════════════════════════════════════════════════════════
 # 6. POMOCNÉ FUNKCE
