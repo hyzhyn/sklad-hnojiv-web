@@ -6,6 +6,7 @@ from datetime import date
 import locale
 import hashlib
 
+# --- NASTAVENÍ ČEŠTINY ---
 try:
     locale.setlocale(locale.LC_ALL, "cs_CZ.UTF-8")
 except:
@@ -14,8 +15,10 @@ except:
     except:
         pass
 
+# --- 1. KONFIGURACE STRÁNKY ---
 st.set_page_config(page_title="Sklad Hnojiv", page_icon="🌱", layout="centered")
 
+# --- 2. CSS ---
 st.markdown("""
 <style>
     .stApp { background-color: #0f1117; color: #e2e8f0; }
@@ -103,7 +106,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ═══════════════════════════════════════════════════════════════
-# 3. HASHOVÁNÍ HESEL
+# 3. HASHOVÁNÍ HESEL — stejná implementace jako desktop app
 # ═══════════════════════════════════════════════════════════════
 def hash_password(password: str) -> str:
     return hashlib.sha256(password.encode('utf-8')).hexdigest()
@@ -118,7 +121,9 @@ def verify_password(plain: str, stored: str):
 
 # ═══════════════════════════════════════════════════════════════
 # 4. DB — CONNECTION POOL
-# oprava výkonu č. 1
+# Klíčová oprava výkonu č. 1:
+# Dříve: psycopg2.connect() = nové TCP spojení při každém dotazu (~100–300 ms)
+# Nyní:  ThreadedConnectionPool = sdílené spojení, zapůjčujeme na dobu dotazu
 # ═══════════════════════════════════════════════════════════════
 @st.cache_resource
 def get_pool():
@@ -150,8 +155,11 @@ def execute_query(query, params=None, fetch=False):
         pool.putconn(conn)   # Vždy vrátit zpět do poolu
 
 # ═══════════════════════════════════════════════════════════════
-# 5. INICIALIZACE DB 
-# oprava výkonu č. 2
+# 5. INICIALIZACE DB — jednou za životnost serveru
+# Klíčová oprava výkonu č. 2:
+# Dříve: check_db_structure() bez cache = 6× ALTER TABLE při KAŽDÉM rerunu
+#        (každý klik spouštěl ALTER TABLE = stovky zbytečných DB dotazů)
+# Nyní:  @st.cache_resource = spustí se jednou, výsledek se kešuje
 # ═══════════════════════════════════════════════════════════════
 @st.cache_resource
 def init_db_once():
@@ -165,6 +173,8 @@ def init_db_once():
             datum_od DATE, datum_do DATE, stredisko_id INTEGER
         )""",
         "ALTER TABLE recept ADD COLUMN IF NOT EXISTS datum_vytvoreni DATE DEFAULT CURRENT_DATE",
+        # Pořadí záznamu v rámci dne: 0 = před inventurou, 1 = po inventuře (default)
+        "ALTER TABLE dodavky_inventura ADD COLUMN IF NOT EXISTS poradi_v_dni SMALLINT DEFAULT 1",
     ]
     for sql in opravy:
         try:
@@ -230,7 +240,11 @@ def vypocti_bilanci(stredisko_id: int, start_date: date, end_date: date) -> list
                 FROM dodavky_inventura di
                 WHERE di.hnojivo_id = h.id
                   AND di.typ = 'dodavka'
-                  AND di.datum > COALESCE(pi.inv_datum, '2000-01-01'::date)
+                  AND (
+                      di.datum > COALESCE(pi.inv_datum, '2000-01-01'::date)
+                      OR (di.datum = COALESCE(pi.inv_datum, '2000-01-01'::date)
+                          AND di.poradi_v_dni >= 1)
+                  )
                   AND di.datum < %(start)s
             ), 0)
             - COALESCE((
@@ -238,7 +252,7 @@ def vypocti_bilanci(stredisko_id: int, start_date: date, end_date: date) -> list
                 FROM michani m
                 JOIN recept_polozka rp ON m.recept_id = rp.recept_id
                 WHERE rp.hnojivo_id = h.id
-                  AND m.datum > COALESCE(pi.inv_datum, '2000-01-01'::date)
+                  AND m.datum >= COALESCE(pi.inv_datum, '2000-01-01'::date)
                   AND m.datum < %(start)s
             ), 0) AS p_stav
         FROM hnojiva h
@@ -320,13 +334,14 @@ def prepocet_tabulka_html(items: list, tank_label: str, tank_key: str, objemy: l
     )
 
 # ═══════════════════════════════════════════════════════════════
-# 8. cookies
+# 8. SESSION STATE + ZAPAMATOVÁNÍ (cookies)
 # ═══════════════════════════════════════════════════════════════
 # Inicializace session state
 for k, v in {
     'logged_in': False, 'user_id': None, 'role': None,
     'display_name': None, 'stredisko_id': None, 'stredisko_name': None,
     'mix_saved': False,
+    'prijem_pending': None,
 }.items():
     if k not in st.session_state:
         st.session_state[k] = v
@@ -471,7 +486,7 @@ else:
 
     st.markdown("---")
 
-    # Recepty načítá jednou — sdílené mezi taby
+    # Recepty načteme jednou — sdílené mezi taby
     recs_raw = execute_query(
         "SELECT id, nazev FROM recept WHERE stredisko_id=%s ORDER BY nazev",
         (sid,), fetch=True
@@ -618,15 +633,127 @@ else:
                 sh = st.selectbox("Hnojivo:", list(hd_dict.keys()))
                 mn = st.number_input("Množství (+):", min_value=0.01, step=50.0)
                 dt = st.date_input("Datum:", value=date.today())
-                if st.button("🚚 Uložit příjem", type="primary", use_container_width=True):
-                    execute_query(
-                        "INSERT INTO dodavky_inventura "
-                        "(hnojivo_id, datum, mnozstvi_kg_l, typ) "
-                        "VALUES (%s,%s,%s,'dodavka')",
-                        (hd_dict[sh], dt, mn)
+
+                # Dialog pro řešení kolize inventura vs. dodávka ve stejný den.
+                # Pořadí závisí na ID (vyšší ID = pozdější záznam v DB).
+                # "Dodávka přišla PŘED inventurou" → dodávka dostane nižší ID
+                #   → vložíme ji PŘED inventuru (není potřeba nic extra, prostě uložíme)
+                #   → ale inventura musí být přepočítána VČETNĚ dodávky.
+                # "Dodávka přišla PO inventuře" → dodávka dostane vyšší ID
+                #   → stačí ji normálně přidat ZA inventuru (výchozí chování).
+                # Technicky: ID řídí pořadí při DISTINCT ON v bilanci.
+                # Přidáme do session_state pending_prijem a zobrazíme dialog.
+
+                @st.dialog("⚠️ Kolize — dodávka a inventura ve stejný den")
+                def dialog_kolize(hnojivo_id, hnojivo_nazev, mnozstvi, datum):
+                    st.markdown(
+                        f"Ve **stejný den ({format_date(datum)})** již existuje "
+                        f"**inventura pro {hnojivo_nazev}**."
                     )
-                    st.toast("✅ Příjem uložen!", icon="🚚")
-                    st.rerun()
+                    st.markdown(
+                        "Pro správný výpočet bilance potřebuji vědět, "
+                        "**co nastalo dříve**:"
+                    )
+                    st.markdown("---")
+
+                    c1, c2 = st.columns(2)
+                    with c1:
+                        st.markdown("**📦 Dodávka přišla PŘED inventurou**")
+                        st.caption(
+                            "Zboží dorazilo ráno, pak byl spočítán stav skladu. "
+                            "Dodávka bude zahrnuta do inventurního stavu."
+                        )
+                        if st.button(
+                            "Dodávka byla PRVNÍ",
+                            type="primary",
+                            use_container_width=True,
+                            key="kolize_pred"
+                        ):
+                            # Vložíme dodávku s nižším ID než inventura:
+                            # Najdeme ID existující inventury a vložíme dodávku
+                            # se stejným datem — DB ji zařadí PŘED inventuru díky
+                            # nižšímu ID. Pak aktualizujeme inventuru (nové INSERT
+                            # s vyšším ID nahradí starou v DISTINCT ON).
+                            inv = execute_query(
+                                "SELECT id, mnozstvi_kg_l FROM dodavky_inventura "
+                                "WHERE hnojivo_id=%s AND datum=%s AND typ='inventura' "
+                                "ORDER BY id DESC LIMIT 1",
+                                (hnojivo_id, datum), fetch=True
+                            )
+                            # Uložíme dodávku (dostane nižší ID než nová inventura)
+                            execute_query(
+                                "INSERT INTO dodavky_inventura "
+                                "(hnojivo_id, datum, mnozstvi_kg_l, typ) "
+                                "VALUES (%s,%s,%s,'dodavka')",
+                                (hnojivo_id, datum, mnozstvi)
+                            )
+                            # Vložíme inventuru znovu se stejnou hodnotou —
+                            # DISTINCT ON vybere tu s nejvyšším ID (tuto novou),
+                            # čímž zajistíme že inventura je "po" dodávce.
+                            if inv:
+                                execute_query(
+                                    "INSERT INTO dodavky_inventura "
+                                    "(hnojivo_id, datum, mnozstvi_kg_l, typ) "
+                                    "VALUES (%s,%s,%s,'inventura')",
+                                    (hnojivo_id, datum, inv[0][1])
+                                )
+                            st.session_state['mix_saved_msg'] = (
+                                f"✅ Dodávka uložena před inventurou ({hnojivo_nazev})."
+                            )
+                            st.rerun()
+
+                    with c2:
+                        st.markdown("**📝 Dodávka přišla PO inventuře**")
+                        st.caption(
+                            "Nejdřív byl spočítán stav skladu, pak dorazilo zboží. "
+                            "Dodávka navýší stav po inventuře."
+                        )
+                        if st.button(
+                            "Inventura byla PRVNÍ",
+                            use_container_width=True,
+                            key="kolize_po"
+                        ):
+                            # Normální vložení — dodávka dostane vyšší ID než
+                            # inventura, takže v bilanci bude správně za ní.
+                            execute_query(
+                                "INSERT INTO dodavky_inventura "
+                                "(hnojivo_id, datum, mnozstvi_kg_l, typ) "
+                                "VALUES (%s,%s,%s,'dodavka')",
+                                (hnojivo_id, datum, mnozstvi)
+                            )
+                            st.session_state['mix_saved_msg'] = (
+                                f"✅ Dodávka uložena po inventuře ({hnojivo_nazev})."
+                            )
+                            st.rerun()
+
+                    if st.button("❌ Zrušit", use_container_width=True, key="kolize_cancel"):
+                        st.rerun()
+
+                # Toast po uložení z dialogu
+                if st.session_state.get('mix_saved_msg'):
+                    st.toast(st.session_state.pop('mix_saved_msg'), icon="🚚")
+
+                if st.button("🚚 Uložit příjem", type="primary", use_container_width=True):
+                    hid = hd_dict[sh]
+                    # Zkontrolujeme, zda ve stejný den existuje inventura pro toto hnojivo
+                    kolize = execute_query(
+                        "SELECT COUNT(*) FROM dodavky_inventura "
+                        "WHERE hnojivo_id=%s AND datum=%s AND typ='inventura'",
+                        (hid, dt), fetch=True
+                    )
+                    if kolize and kolize[0][0] > 0:
+                        # Kolize — otevřeme dialog
+                        dialog_kolize(hid, sh, mn, dt)
+                    else:
+                        # Žádná kolize — uložíme přímo
+                        execute_query(
+                            "INSERT INTO dodavky_inventura "
+                            "(hnojivo_id, datum, mnozstvi_kg_l, typ) "
+                            "VALUES (%s,%s,%s,'dodavka')",
+                            (hid, dt, mn)
+                        )
+                        st.toast("✅ Příjem uložen!", icon="🚚")
+                        st.rerun()
 
         if st.session_state.get('role') == 'admin':
             st.markdown("---")
