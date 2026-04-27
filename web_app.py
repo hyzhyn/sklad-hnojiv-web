@@ -160,7 +160,19 @@ def _is_old_sha256(stored: str) -> bool:
 
 def verify_password(plain: str, stored: str):
     """Vrátí (ok: bool, needs_upgrade: bool).
-       needs_upgrade=True znamená, že volající má hash v DB přepsat scryptem."""
+       needs_upgrade=True znamená, že volající má hash v DB přepsat scryptem.
+
+       Podporované formáty:
+         1. "scrypt$<salt>$<hash>"  — moderní formát, žádný upgrade.
+         2. 64-znakový hex          — starý SHA-256, na úspěšné přihlášení upgrade.
+         3. cokoliv jiného          — bere se jako plain-text heslo
+                                      (admin workflow: změna hesla přímo v DB).
+                                      Na úspěšné přihlášení se okamžitě upgraduje.
+
+       Plain-text fallback je záměrný kompromis: usnadňuje administrativní
+       reset hesla zápisem do DB, a první přihlášení takový záznam přepíše
+       scryptem.
+    """
     if not stored:
         return False, False
 
@@ -172,8 +184,9 @@ def verify_password(plain: str, stored: str):
         ok = secrets.compare_digest(old_hash, stored)
         return ok, ok   # upgrade jen když heslo opravdu sedí
 
-    # Neznámý formát — odmítnout. Plain-text fallback byl odstraněn.
-    return False, False
+    # Plain-text fallback (admin workflow).
+    ok = secrets.compare_digest(plain, stored)
+    return ok, ok   # při shodě upgradujeme na scrypt
 
 # ═══════════════════════════════════════════════════════════════
 # 4. DB — CONNECTION POOL
