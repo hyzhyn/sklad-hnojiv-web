@@ -5,6 +5,7 @@ import pandas as pd
 from datetime import date
 import locale
 import hashlib
+import secrets
 
 # --- NASTAVENÍ ČEŠTINY ---
 try:
@@ -106,17 +107,72 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ═══════════════════════════════════════════════════════════════
-# 3. HASHOVÁNÍ HESEL — stejná implementace jako desktop app
+# 3. HASHOVÁNÍ HESEL — KOMPATIBILNÍ S DESKTOP APLIKACÍ
+#
+# OPRAVA: desktop aplikace přešla na scrypt hashování (RFC 7914).
+# Předchozí web verze používala SHA-256 bez soli a navíc akceptovala
+# plain-text porovnání jako fallback. To znamenalo:
+#   1) Po prvním přihlášení do desktop appky se hash převedl na scrypt
+#      a uživatel se už NEMOHL přihlásit do webu (verify selhal).
+#   2) Plain-text fallback byl bezpečnostní díra.
+#
+# Nyní web umí ČÍST všechny tři formáty:
+#   - "scrypt$<salt_hex>$<hash_hex>"  ← nový desktop formát
+#   - 64-znakový SHA-256 hex          ← starý desktop/web formát
+#   - cokoli jiného                   ← odmítnuto
+#
+# Při úspěšném přihlášení starým formátem se hash automaticky upgraduje
+# na scrypt — stejné chování jako desktop. Po jednom přihlášení (z webu
+# nebo desktopu) bude uživatel mít moderní hash a obě aplikace fungují.
 # ═══════════════════════════════════════════════════════════════
+_SCRYPT_N      = 131_072   # 2^17
+_SCRYPT_R      = 8
+_SCRYPT_P      = 1
+_SCRYPT_DKLEN  = 64
+_SCRYPT_PREFIX = "scrypt$"
+
 def hash_password(password: str) -> str:
-    return hashlib.sha256(password.encode('utf-8')).hexdigest()
+    """Vytvoří scrypt hash s 32B náhodnou solí. Stejná implementace jako desktop."""
+    salt = secrets.token_bytes(32)
+    dk = hashlib.scrypt(
+        password.encode("utf-8"),
+        salt=salt, n=_SCRYPT_N, r=_SCRYPT_R, p=_SCRYPT_P,
+        dklen=_SCRYPT_DKLEN, maxmem=150_000_000,
+    )
+    return f"{_SCRYPT_PREFIX}{salt.hex()}${dk.hex()}"
+
+def _verify_scrypt(plain: str, stored: str) -> bool:
+    try:
+        _, salt_hex, hash_hex = stored.split("$")
+        salt     = bytes.fromhex(salt_hex)
+        expected = bytes.fromhex(hash_hex)
+        dk = hashlib.scrypt(
+            plain.encode("utf-8"),
+            salt=salt, n=_SCRYPT_N, r=_SCRYPT_R, p=_SCRYPT_P,
+            dklen=_SCRYPT_DKLEN, maxmem=150_000_000,
+        )
+        return secrets.compare_digest(dk, expected)
+    except Exception:
+        return False
+
+def _is_old_sha256(stored: str) -> bool:
+    return len(stored) == 64 and all(c in "0123456789abcdef" for c in stored.lower())
 
 def verify_password(plain: str, stored: str):
-    """Vrátí (ok: bool, needs_upgrade: bool)."""
-    if hash_password(plain) == stored:
-        return True, False          # Hashované heslo — OK
-    if plain == stored:
-        return True, True           # Plain-text — OK, ale upgradujeme
+    """Vrátí (ok: bool, needs_upgrade: bool).
+       needs_upgrade=True znamená, že volající má hash v DB přepsat scryptem."""
+    if not stored:
+        return False, False
+
+    if stored.startswith(_SCRYPT_PREFIX):
+        return _verify_scrypt(plain, stored), False
+
+    if _is_old_sha256(stored):
+        old_hash = hashlib.sha256(plain.encode("utf-8")).hexdigest()
+        ok = secrets.compare_digest(old_hash, stored)
+        return ok, ok   # upgrade jen když heslo opravdu sedí
+
+    # Neznámý formát — odmítnout. Plain-text fallback byl odstraněn.
     return False, False
 
 # ═══════════════════════════════════════════════════════════════
@@ -195,19 +251,15 @@ def init_db_once():
 
 init_db_once()
 
-# Oprava constraintu — spustí se při každém načtení aplikace.
-# Nutné protože @st.cache_resource by to při druhém startu přeskočil.
-try:
-    execute_query(
-        "ALTER TABLE dodavky_inventura DROP CONSTRAINT IF EXISTS unique_hnojivo_mesic"
-    )
-    execute_query("""
-        CREATE UNIQUE INDEX IF NOT EXISTS unique_inventura_hnojivo_den
-        ON dodavky_inventura (hnojivo_id, datum)
-        WHERE typ = 'inventura'
-    """)
-except Exception as e:
-    print(f"Constraint fix: {e}")
+# OPRAVA: dříve zde byl duplicitní blok, který spouštěl
+#   ALTER TABLE ... DROP CONSTRAINT
+#   CREATE UNIQUE INDEX
+# při KAŽDÉM rerunu (= každém kliknutí v UI). To je přesně to, čemu
+# má init_db_once() s @st.cache_resource zabránit. Komentář v původním
+# kódu tvrdil, že cache toto při druhém startu přeskočí — to je nepřesné:
+# @st.cache_resource běží jednou za životnost serveru, takže pokud někdy
+# spadne první spuštění, restart serveru ji znovu spustí. Duplikátní
+# blok je tedy zbytečný a jen zatěžuje DB.
 
 # ═══════════════════════════════════════════════════════════════
 # 6. POMOCNÉ FUNKCE
@@ -461,7 +513,12 @@ if not st.session_state['logged_in']:
                     "WHERE username=%s AND stredisko_id=%s",
                     (u.strip(), sd[s_name]), fetch=True
                 )
-                if ud:
+                # OPRAVA: záměrně obecná chybová zpráva — neprozrazujeme,
+                # zda existuje uživatel nebo selhalo heslo (prevence enumerace).
+                _generic_error = "❌ Neplatné přihlašovací údaje."
+                if not ud:
+                    st.error(_generic_error)
+                else:
                     uid, role, cele_jmeno, stored_pw = ud[0]
                     ok, needs_upgrade = verify_password(p, stored_pw)
                     if ok:
@@ -486,9 +543,7 @@ if not st.session_state['logged_in']:
                         })
                         st.rerun()
                     else:
-                        st.error("❌ Špatné heslo.")
-                else:
-                    st.error("❌ Uživatel nenalezen nebo špatné středisko.")
+                        st.error(_generic_error)
 
 # ═══════════════════════════════════════════════════════════════
 # B) HLAVNÍ OBSAH
