@@ -109,18 +109,16 @@ st.markdown("""
 # ═══════════════════════════════════════════════════════════════
 # 3. HASHOVÁNÍ HESEL — KOMPATIBILNÍ S DESKTOP APLIKACÍ
 #
-# OPRAVA: desktop aplikace přešla na scrypt hashování (RFC 7914).
-# Předchozí web verze používala SHA-256 bez soli a navíc akceptovala
+# desktop aplikace přešla na scrypt hashování (RFC 7914).
+# Předchozí web verze používala SHA-256 navíc akceptovala
 # plain-text porovnání jako fallback. To znamenalo:
 #   1) Po prvním přihlášení do desktop appky se hash převedl na scrypt
 #      a uživatel se už NEMOHL přihlásit do webu (verify selhal).
 #   2) Plain-text fallback byl bezpečnostní díra.
 #
-# Nyní web umí ČÍST všechny tři formáty:
+#  web umí ČÍST všechny tři formáty:
 #   - "scrypt$<salt_hex>$<hash_hex>"  ← nový desktop formát
 #   - 64-znakový SHA-256 hex          ← starý desktop/web formát
-#   - cokoli jiného                   ← odmítnuto
-#
 # Při úspěšném přihlášení starým formátem se hash automaticky upgraduje
 # na scrypt — stejné chování jako desktop. Po jednom přihlášení (z webu
 # nebo desktopu) bude uživatel mít moderní hash a obě aplikace fungují.
@@ -190,9 +188,9 @@ def verify_password(plain: str, stored: str):
 
 # ═══════════════════════════════════════════════════════════════
 # 4. DB — CONNECTION POOL
-# Klíčová oprava výkonu č. 1:
+# oprava výkonu č. 1:
 # Dříve: psycopg2.connect() = nové TCP spojení při každém dotazu (~100–300 ms)
-# Nyní:  ThreadedConnectionPool = sdílené spojení, zapůjčujeme na dobu dotazu
+# Nyní:  ThreadedConnectionPool = sdílené spojení
 # ═══════════════════════════════════════════════════════════════
 @st.cache_resource
 def get_pool():
@@ -223,13 +221,13 @@ def execute_query(query, params=None, fetch=False):
     finally:
         pool.putconn(conn)   # Vždy vrátit zpět do poolu
 
-# ═══════════════════════════════════════════════════════════════
+# xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 # 5. INICIALIZACE DB — jednou za životnost serveru
-# Klíčová oprava výkonu č. 2:
+# oprava výkonu č. 2:
 # Dříve: check_db_structure() bez cache = 6× ALTER TABLE při KAŽDÉM rerunu
 #        (každý klik spouštěl ALTER TABLE = stovky zbytečných DB dotazů)
-# Nyní:  @st.cache_resource = spustí se jednou, výsledek se kešuje
-# ═══════════════════════════════════════════════════════════════
+# Nyní:  @st.cache_resource = spustí se jednou
+# xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 @st.cache_resource
 def init_db_once():
     opravy = [
@@ -267,9 +265,7 @@ init_db_once()
 # OPRAVA: dříve zde byl duplicitní blok, který spouštěl
 #   ALTER TABLE ... DROP CONSTRAINT
 #   CREATE UNIQUE INDEX
-# při KAŽDÉM rerunu (= každém kliknutí v UI). To je přesně to, čemu
-# má init_db_once() s @st.cache_resource zabránit. Komentář v původním
-# kódu tvrdil, že cache toto při druhém startu přeskočí — to je nepřesné:
+# při KAŽDÉM rerunu (= každém kliknutí v UI).
 # @st.cache_resource běží jednou za životnost serveru, takže pokud někdy
 # spadne první spuštění, restart serveru ji znovu spustí. Duplikátní
 # blok je tedy zbytečný a jen zatěžuje DB.
@@ -423,7 +419,7 @@ def prepocet_tabulka_html(items: list, tank_label: str, tank_key: str, objemy: l
     )
 
 # ═══════════════════════════════════════════════════════════════
-# 8. SESSION STATE + ZAPAMATOVÁNÍ (cookies)
+# 8. SESSION STATE + cookies
 # ═══════════════════════════════════════════════════════════════
 # Inicializace session state
 for k, v in {
@@ -526,7 +522,7 @@ if not st.session_state['logged_in']:
                     "WHERE username=%s AND stredisko_id=%s",
                     (u.strip(), sd[s_name]), fetch=True
                 )
-                # OPRAVA: záměrně obecná chybová zpráva — neprozrazujeme,
+                # OPRAVA: záměrně obecná chybová zpráva
                 # zda existuje uživatel nebo selhalo heslo (prevence enumerace).
                 _generic_error = "❌ Neplatné přihlašovací údaje."
                 if not ud:
